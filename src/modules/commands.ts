@@ -1,7 +1,17 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { computeNetBalances } from './debts.js';
+import { computeExpenseSummary } from './expenseSummary.js';
+import { computeHealth } from './health.js';
 import { computeNetWorth, listAssets, listDeposits, listLoans } from './loanAssetDeposit.js';
+import {
+  compareWithLastMonth,
+  knownCategories,
+  MONTH_REF,
+  parseMonthRef,
+  queryCategoryTotal,
+  rangeOf,
+} from './query.js';
 import {
   deleteAsset,
   deleteBill,
@@ -64,6 +74,9 @@ const UNDO_LAST = /^(?:ยกเลิกล่าสุด|ลบล่าส�
 const DELETE_BY_NAME = /^ลบ(นัด|บิล|เอกสาร|ยา|เวร|เงินกู้|ทรัพย์สิน|เงินฝาก|ของ|งาน)\s+(.+)$/;
 const CLOSE_TASK = /^(?:ปิดงาน|งานเสร็จ)\s+(.+)$/;
 const SET_BIRTHDAY = /^วันเกิด\s*(?:ของ)?\s*(.+?)\s+((?:\d{1,2}|[ก-๛]).+)$/;
+const SYSTEM_STATUS = /^(?:สถานะระบบ|ระบบเป็นไงบ้าง|เช็คระบบ)$/;
+const COMPARE_MONTHS = /^(?:เทียบ(?:กับ)?เดือน(?:ที่แล้ว|ก่อน)?|เดือนนี้ใช้เยอะกว่าเดือนที่แล้วไหม)$/;
+const SPEND_SUMMARY = /^(?:สรุป(?:รายจ่าย)?|ใช้ไปเท่าไหร่|ใช้เงินไปเท่าไหร่)\s*(.*)$/;
 const PAY_BILL = /^(?:จ่ายบิลแล้ว|จ่ายบิล|บิลจ่ายแล้ว)\s+(.+)$/;
 const TASK_BOARD = /^(?:บอร์ดงาน|งานค้าง|สรุปงาน)$/;
 
@@ -110,6 +123,21 @@ export async function tryDirectCommand(
 
   const payBill = text.match(PAY_BILL);
   if (payBill) return handlePayBill(ctx, (payBill[1] as string).trim());
+
+  if (SYSTEM_STATUS.test(text)) return handleSystemStatus(ctx);
+  if (COMPARE_MONTHS.test(text)) return handleCompareMonths(ctx);
+
+  const spend = text.match(SPEND_SUMMARY);
+  if (spend) {
+    const summary = await handleSpendSummary(ctx, (spend[1] as string).trim());
+    if (summary) return summary;
+  }
+
+  // "ค่าไฟเดือนที่แล้ว" — only when the leading words name a category this
+  // family actually uses, so ordinary chat that happens to end in a month
+  // ("ไปเชียงใหม่เดือนที่แล้ว") falls through to the intent parser untouched.
+  const looksHistorical = await handleCategoryHistory(ctx, text);
+  if (looksHistorical) return looksHistorical;
 
   const del = text.match(DELETE_BY_NAME);
   if (del) return handleDeleteByName(ctx, del[1] as DeletableDomain, (del[2] as string).trim());
@@ -300,6 +328,148 @@ async function handleDepositSummary(ctx: CommandContext): Promise<CommandResult>
   const total = deposits.reduce((sum, d) => sum + d.balanceSatang, 0);
 
   return { reply: `สรุปเงินฝาก\n\n${lines.join('\n')}\n\nรวม ${formatSatang(total)} บาท` };
+}
+
+/** "สถานะระบบ" — the same numbers /health serves, in a sentence. */
+async function handleSystemStatus(ctx: CommandContext): Promise<CommandResult> {
+  const report = await computeHealth(ctx.prisma, ctx.now, 500);
+
+  const lines = [
+    report.ok ? '✅ ระบบทำงานปกติครับ' : '⚠️ การเตือนค้างอยู่ ระบบอาจมีปัญหา',
+    '',
+    `การเตือนที่รออยู่: ${report.pendingJobs} รายการ`,
+  ];
+
+  if (report.stuckJobs > 0) {
+    lines.push(`ค้างเกิน 1 วัน: ${report.stuckJobs} รายการ — ผิดปกติ`);
+  }
+  lines.push(
+    report.hoursSinceLastSend === null
+      ? 'ยังไม่เคยส่งการเตือน'
+      : `ส่งการเตือนล่าสุด: ${report.hoursSinceLastSend} ชม. ที่แล้ว`,
+  );
+  lines.push(`โควตา push เดือนนี้: ใช้ไป ${report.pushUsed} จาก ~${report.pushQuota}`);
+
+  return { reply: lines.join('\n') };
+}
+
+/**
+ * "สรุปเดือนที่แล้ว" / "ใช้ไปเท่าไหร่".
+ *
+ * Returns null when the words after "สรุป" are not a period this understands,
+ * so "สรุปยอดขายร้าน" is left for the intent parser rather than answered with
+ * an unrelated expense report.
+ */
+async function handleSpendSummary(
+  ctx: CommandContext,
+  tail: string,
+): Promise<CommandResult | null> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const parsed = parseMonthRef(tail, ctx.now);
+  if (tail.length > 0 && !parsed) return null;
+
+  const ref = parsed ?? {
+    yearMonth: ctx.now.toFormat('yyyy-MM'),
+    year: null,
+    label: 'เดือนนี้',
+  };
+
+  if (ref.year !== null) {
+    const range = rangeOf(ref, zone);
+    if (!range) return { reply: 'อ่านช่วงเวลาไม่ออกครับ' };
+
+    const rows = await ctx.prisma.transaction.findMany({
+      where: {
+        familyId: ctx.familyId,
+        direction: 'OUT',
+        occurredAt: { gte: range.start.toJSDate(), lte: range.end.toJSDate() },
+      },
+      select: { amount: true },
+    });
+    const total = rows.reduce((sum, r) => sum + r.amount, 0);
+    return {
+      reply: `${ref.label}ใช้ไปทั้งหมด ${formatSatang(total)} บาท (${rows.length} รายการ)`,
+    };
+  }
+
+  const summary = await computeExpenseSummary(
+    ctx.prisma,
+    ctx.familyId,
+    ref.yearMonth as string,
+    zone,
+  );
+  if (!summary || summary.totalSatang === 0) {
+    return { reply: `${ref.label}ยังไม่มีรายจ่ายบันทึกไว้ครับ` };
+  }
+
+  const top = summary.byCategory
+    .slice(0, 5)
+    .map((c) => `• ${c.name} ${formatSatang(c.amountSatang)}`)
+    .join('\n');
+
+  return {
+    reply: `สรุปรายจ่าย${ref.label}\nรวม ${formatSatang(summary.totalSatang)} บาท\n\n${top}`,
+  };
+}
+
+/** "เทียบกับเดือนที่แล้ว" */
+async function handleCompareMonths(ctx: CommandContext): Promise<CommandResult> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const cmp = await compareWithLastMonth(ctx.prisma, ctx.familyId, ctx.now, zone);
+  if (!cmp) return { reply: 'ยังไม่มีข้อมูลพอให้เทียบครับ' };
+
+  if (cmp.thisMonth === 0 && cmp.lastMonth === 0) {
+    return { reply: 'ทั้งสองเดือนยังไม่มีรายจ่ายบันทึกไว้ครับ' };
+  }
+
+  const direction = cmp.deltaSatang > 0 ? 'มากกว่า' : 'น้อยกว่า';
+  const movers = cmp.topMovers
+    .map((m) => `• ${m.name} ${m.deltaSatang > 0 ? '+' : '−'}${formatSatang(Math.abs(m.deltaSatang))}`)
+    .join('\n');
+
+  return {
+    reply: [
+      `เดือนนี้ ${formatSatang(cmp.thisMonth)} บาท`,
+      `เดือนที่แล้ว ${formatSatang(cmp.lastMonth)} บาท`,
+      '',
+      cmp.deltaSatang === 0
+        ? 'เท่ากันพอดี'
+        : `${direction} ${formatSatang(Math.abs(cmp.deltaSatang))} บาท`,
+      ...(movers ? ['', 'เปลี่ยนแปลงมากสุด:', movers] : []),
+    ].join('\n'),
+  };
+}
+
+/**
+ * "ค่าไฟเดือนที่แล้ว" — returns null (not a reply) unless the words before the
+ * month match a category this family already has, so ordinary chat is left for
+ * the intent parser.
+ */
+async function handleCategoryHistory(
+  ctx: CommandContext,
+  text: string,
+): Promise<CommandResult | null> {
+  const ref = parseMonthRef(text, ctx.now);
+  if (!ref) return null;
+
+  const head = text.replace(MONTH_REF, '').replace(/^ค่า/, '').trim();
+  if (head.length === 0) return null;
+
+  const categories = await knownCategories(ctx.prisma, ctx.familyId);
+  const match = categories.find((name) => name === head);
+  if (!match) return null;
+
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const total = await queryCategoryTotal(ctx.prisma, ctx.familyId, match, ref, zone);
+  if (!total) return null;
+
+  if (total.count === 0) {
+    return { reply: `${ref.label}ไม่มีรายจ่ายหมวด "${match}" ครับ` };
+  }
+
+  return {
+    reply: `${match} ${ref.label}: ${formatSatang(total.totalSatang)} บาท (${total.count} รายการ)`,
+  };
 }
 
 /**

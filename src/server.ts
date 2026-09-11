@@ -14,6 +14,7 @@ import { createApp } from './line/app.js';
 import { DraftStore } from './line/drafts.js';
 import { PhotoTargetStore } from './line/photoTargets.js';
 import { ReminderEngine, yearMonthOf } from './reminders/engine.js';
+import { computeHealth } from './modules/health.js';
 import { refreshRecurring } from './reminders/generate.js';
 import {
   LineNotifier,
@@ -107,6 +108,7 @@ async function main(): Promise<void> {
     defaultTimezone: cfg.TZ,
     channelSecret: cfg.LINE_CHANNEL_SECRET,
     pendingDrafts: () => drafts.size,
+    health: () => computeHealth(prisma, DateTime.now().setZone(cfg.TZ), cfg.PUSH_MONTHLY_QUOTA),
     log,
     ...(cfg.LIFF_ID ? { liffId: cfg.LIFF_ID } : {}),
     ...(cfg.LIFF_CHANNEL_ID

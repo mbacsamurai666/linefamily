@@ -3,6 +3,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { validateSignature, type WebhookEvent } from '@line/bot-sdk';
 import type { ApiDeps } from '../api/router.js';
 import { createApiRouter } from '../api/router.js';
+import type { HealthReport } from '../modules/health.js';
 import type { WebhookDeps } from './webhook.js';
 import { handleEvent } from './webhook.js';
 
@@ -19,12 +20,32 @@ export interface AppDeps extends WebhookDeps {
   liffApi?: ApiDeps;
   /** Handed to the LIFF page at runtime so a rebuild is never needed to change it. */
   liffId?: string;
+  /** Omit to keep /health a plain liveness check with no database round trip. */
+  health?: () => Promise<HealthReport>;
 }
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
 
-  app.get('/health', (c) => c.json({ ok: true, drafts: deps.pendingDrafts?.() ?? 0 }));
+  /**
+   * 503 when the queue has stopped draining, so an uptime monitor pointed here
+   * raises an alarm instead of only noticing a process that is fully dead. A
+   * bot that is up but silently not reminding anyone is the failure that
+   * actually costs a family something.
+   */
+  app.get('/health', async (c) => {
+    const drafts = deps.pendingDrafts?.() ?? 0;
+
+    if (!deps.health) return c.json({ ok: true, drafts });
+
+    try {
+      const report = await deps.health();
+      return c.json({ ...report, drafts }, report.ok ? 200 : 503);
+    } catch (err) {
+      deps.log?.('health check failed', { err: String(err) });
+      return c.json({ ok: false, drafts, error: 'database unreachable' }, 503);
+    }
+  });
 
   if (deps.liffApi) {
     app.route('/api', createApiRouter(deps.liffApi));

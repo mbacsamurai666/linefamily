@@ -2080,6 +2080,7 @@ function BillsSection() {
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [dueDay, setDueDay] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = () => api.bills().then((r) => setBills(r.items)).catch((e: Error) => setError(e.message));
@@ -2087,24 +2088,46 @@ function BillsSection() {
     load();
   }, []);
 
+  const startEdit = (bill: BillItem) => {
+    setEditingId(bill.id);
+    setName(bill.name);
+    setAmount(bill.amountSatang === null ? '' : String(bill.amountSatang / 100));
+    setDueDay(String(bill.dueDay));
+    setShowAdd(true);
+  };
+
+  const closeForm = () => {
+    setShowAdd(false);
+    setEditingId(null);
+    setName('');
+    setAmount('');
+    setDueDay('');
+  };
+
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     const day = Number(dueDay);
     if (!name.trim() || !Number.isInteger(day) || day < 1 || day > 31) return;
     const amountBaht = Number(amount);
+    const hasAmount = Number.isFinite(amountBaht) && amountBaht > 0;
 
     setSaving(true);
     try {
-      await api.addBill({
-        name: name.trim(),
-        dueDay: day,
-        ...(Number.isFinite(amountBaht) && amountBaht > 0 ? { amountBaht } : {}),
-      });
-      setName('');
-      setAmount('');
-      setDueDay('');
-      setShowAdd(false);
-      await load();
+      if (editingId) {
+        // null clears a fixed amount, for a bill that varies month to month.
+        await api.updateBill(editingId, {
+          name: name.trim(),
+          dueDay: day,
+          amountBaht: hasAmount ? amountBaht : null,
+        });
+      } else {
+        await api.addBill({
+          name: name.trim(),
+          dueDay: day,
+          ...(hasAmount ? { amountBaht } : {}),
+        });
+      }
+      closeForm();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -2146,6 +2169,7 @@ function BillsSection() {
                     await load();
                   },
                 }}
+                onEdit={() => startEdit(bill)}
                 onDelete={async () => {
                   await api.deleteBill(bill.id);
                   await load();
@@ -2202,11 +2226,11 @@ function BillsSection() {
             </div>
           </div>
           <div className="field-row">
-            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+            <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก
             </button>
             <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : 'ตั้งบิล'}
+              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งบิล'}
             </button>
           </div>
         </form>
@@ -2226,6 +2250,7 @@ function DocumentsSection() {
   const [name, setName] = useState('');
   const [type, setType] = useState('OTHER');
   const [expiresAt, setExpiresAt] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = () =>
@@ -2234,17 +2259,32 @@ function DocumentsSection() {
     load();
   }, []);
 
+  const closeForm = () => {
+    setShowAdd(false);
+    setEditingId(null);
+    setName('');
+    setExpiresAt('');
+    setType('OTHER');
+  };
+
+  const startEdit = (doc: DocumentItem) => {
+    setEditingId(doc.id);
+    setName(doc.name);
+    setType(doc.type);
+    // The API hands back a full ISO timestamp; <input type="date"> wants a day.
+    setExpiresAt(doc.expiresAt.slice(0, 10));
+    setShowAdd(true);
+  };
+
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !expiresAt) return;
 
     setSaving(true);
     try {
-      await api.addDocument({ name: name.trim(), type, expiresAt });
-      setName('');
-      setExpiresAt('');
-      setType('OTHER');
-      setShowAdd(false);
+      if (editingId) await api.updateDocument(editingId, { name: name.trim(), type, expiresAt });
+      else await api.addDocument({ name: name.trim(), type, expiresAt });
+      closeForm();
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -2279,6 +2319,7 @@ function DocumentsSection() {
                 </div>
               </div>
               <RowActions
+                onEdit={() => startEdit(doc)}
                 onDelete={async () => {
                   await api.deleteDocument(doc.id);
                   await load();
@@ -2326,11 +2367,11 @@ function DocumentsSection() {
             </div>
           </div>
           <div className="field-row">
-            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+            <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก
             </button>
             <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : 'บันทึกเอกสาร'}
+              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'บันทึกเอกสาร'}
             </button>
           </div>
         </form>
@@ -2350,6 +2391,7 @@ function MedicationsSection() {
   const [name, setName] = useState('');
   const [dosage, setDosage] = useState('');
   const [times, setTimes] = useState('08:00, 20:00');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = () =>
@@ -2357,6 +2399,22 @@ function MedicationsSection() {
   useEffect(() => {
     load();
   }, []);
+
+  const closeForm = () => {
+    setShowAdd(false);
+    setEditingId(null);
+    setName('');
+    setDosage('');
+    setTimes('08:00, 20:00');
+  };
+
+  const startEdit = (med: MedicationItem) => {
+    setEditingId(med.id);
+    setName(med.name);
+    setDosage(med.dosage ?? '');
+    setTimes(med.times.join(', '));
+    setShowAdd(true);
+  };
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2371,15 +2429,22 @@ function MedicationsSection() {
 
     setSaving(true);
     try {
-      await api.addMedication({
-        name: name.trim(),
-        times: parsedTimes,
-        ...(dosage.trim() ? { dosage: dosage.trim() } : {}),
-      });
-      setName('');
-      setDosage('');
-      setTimes('08:00, 20:00');
-      setShowAdd(false);
+      if (editingId) {
+        // null, not omitted: clearing the dosage field has to reach the server
+        // as an erasure, otherwise an old dose lingers on the reminder.
+        await api.updateMedication(editingId, {
+          name: name.trim(),
+          times: parsedTimes,
+          dosage: dosage.trim() || null,
+        });
+      } else {
+        await api.addMedication({
+          name: name.trim(),
+          times: parsedTimes,
+          ...(dosage.trim() ? { dosage: dosage.trim() } : {}),
+        });
+      }
+      closeForm();
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -2424,6 +2489,7 @@ function MedicationsSection() {
                     await load();
                   },
                 }}
+                onEdit={() => startEdit(med)}
                 onDelete={async () => {
                   await api.deleteMedication(med.id);
                   await load();
@@ -2474,14 +2540,14 @@ function MedicationsSection() {
             </div>
           </div>
           <div className="field-row">
-            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+            <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก
             </button>
             <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : 'ตั้งเตือนยา'}
+              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งเตือนยา'}
             </button>
           </div>
-          <div className="muted">ยาจะบันทึกเป็นของคนที่เปิดแอปอยู่ตอนนี้</div>
+          {!editingId && <div className="muted">ยาจะบันทึกเป็นของคนที่เปิดแอปอยู่ตอนนี้</div>}
         </form>
       ) : (
         <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
@@ -2499,12 +2565,28 @@ function ChoresSection() {
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState('WEEKLY');
   const [rotation, setRotation] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = () => api.chores().then((r) => setChores(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
+
+  const closeForm = () => {
+    setShowAdd(false);
+    setEditingId(null);
+    setName('');
+    setCadence('WEEKLY');
+    setRotation('');
+  };
+
+  const startEdit = (chore: ChoreItem) => {
+    setEditingId(chore.id);
+    setName(chore.name);
+    setCadence(chore.cadence);
+    setShowAdd(true);
+  };
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2517,10 +2599,15 @@ function ChoresSection() {
 
     setSaving(true);
     try {
-      await api.addChore({ name: name.trim(), cadence, rotationNames });
-      setName('');
-      setRotation('');
-      setShowAdd(false);
+      if (editingId) {
+        // The rotation is fixed when the chore is created — editing covers the
+        // parts that actually drift: what it is called and how often it comes
+        // round. Changing who is in the rotation means making a new chore.
+        await api.updateChore(editingId, { name: name.trim(), cadence });
+      } else {
+        await api.addChore({ name: name.trim(), cadence, rotationNames });
+      }
+      closeForm();
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -2563,6 +2650,7 @@ function ChoresSection() {
                     await load();
                   },
                 }}
+                onEdit={() => startEdit(chore)}
                 onDelete={async () => {
                   await api.deleteChore(chore.id);
                   await load();
@@ -2612,15 +2700,17 @@ function ChoresSection() {
                 placeholder="แม่ พ่อ พี่เอ"
                 value={rotation}
                 onChange={(e) => setRotation(e.target.value)}
+                disabled={editingId !== null}
               />
             </div>
           </div>
+          {editingId && <div className="muted">ลำดับเวรแก้ไม่ได้ — ถ้าจะเปลี่ยนคน ให้ตั้งเวรใหม่</div>}
           <div className="field-row">
-            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+            <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก
             </button>
             <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : 'ตั้งเวร'}
+              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งเวร'}
             </button>
           </div>
         </form>

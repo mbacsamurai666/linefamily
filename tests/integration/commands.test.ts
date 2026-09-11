@@ -362,6 +362,91 @@ describe('tryDirectCommand — ยกเลิกล่าสุด', () => {
   });
 });
 
+describe('tryDirectCommand — looking back', () => {
+  async function spend(amount: number, categoryName: string, at: DateTime) {
+    await persistDraft(
+      { kind: 'expense', amount, direction: 'OUT', categoryName, occurredAt: at },
+      { prisma: db.prisma, familyId, memberId, now: at },
+    );
+  }
+
+  it('answers a category question about last month', async () => {
+    await spend(80000, 'ไฟ', NOW.minus({ months: 1 }));
+    await spend(25000, 'ไฟ', NOW); // this month — must not be counted
+
+    const result = await tryDirectCommand('ค่าไฟเดือนที่แล้ว', ctx());
+    expect(result?.reply).toContain('800');
+    expect(result?.reply).not.toContain('1,050');
+  });
+
+  it('understands a named month', async () => {
+    await spend(50000, 'ไฟ', DateTime.fromISO('2026-08-10T10:00', { zone: ZONE }));
+
+    const result = await tryDirectCommand('ค่าไฟ ส.ค.', ctx());
+    expect(result?.reply).toContain('500');
+  });
+
+  it('leaves ordinary chat that happens to end in a month alone', async () => {
+    await spend(80000, 'ไฟ', NOW);
+    // "เชียงใหม่" is not a category this family uses, so this is not a query.
+    expect(await tryDirectCommand('ไปเชียงใหม่เดือนที่แล้ว', ctx())).toBeNull();
+  });
+
+  it('summarises a past month, and says so when it is empty', async () => {
+    await spend(30000, 'ข้าว', NOW.minus({ months: 1 }));
+
+    const filled = await tryDirectCommand('สรุปเดือนที่แล้ว', ctx());
+    expect(filled?.reply).toContain('300');
+    expect(filled?.reply).toContain('ข้าว');
+
+    const empty = await tryDirectCommand('สรุปเดือนนี้', ctx());
+    expect(empty?.reply).toContain('ยังไม่มีรายจ่าย');
+  });
+
+  it('does not hijack a "สรุป" that is not about a period', async () => {
+    expect(await tryDirectCommand('สรุปยอดขายร้าน', ctx())).toBeNull();
+  });
+
+  it('still routes the older สรุป commands to their own handlers', async () => {
+    const board = await tryDirectCommand('สรุปงาน', ctx());
+    expect(board?.reply).toContain('บอร์ด');
+
+    const worth = await tryDirectCommand('สรุปฐานะการเงิน', ctx());
+    expect(worth?.reply).toContain('ฐานะการเงิน');
+  });
+
+  it('compares this month with last, naming what moved', async () => {
+    await spend(100000, 'ไฟ', NOW.minus({ months: 1 }));
+    await spend(150000, 'ไฟ', NOW);
+
+    const result = await tryDirectCommand('เทียบกับเดือนที่แล้ว', ctx());
+    expect(result?.reply).toContain('มากกว่า');
+    expect(result?.reply).toContain('ไฟ');
+  });
+});
+
+describe('tryDirectCommand — สถานะระบบ', () => {
+  it('reports healthy when nothing is stuck', async () => {
+    const result = await tryDirectCommand('สถานะระบบ', ctx());
+    expect(result?.reply).toContain('ปกติ');
+  });
+
+  it('flags reminders that outlived two digest windows', async () => {
+    await db.prisma.notificationJob.create({
+      data: {
+        familyId,
+        kind: 'EVENT',
+        refId: 'stuck',
+        dueAt: NOW.minus({ days: 3 }).toJSDate(),
+        payload: { text: 'ค้างมานาน' },
+      },
+    });
+
+    const result = await tryDirectCommand('สถานะระบบ', ctx());
+    expect(result?.reply).toContain('ผิดปกติ');
+  });
+});
+
 describe('tryDirectCommand — บอร์ดงาน', () => {
   it('lists what is still open, marking what is in progress', async () => {
     await persistDraft({ kind: 'task', title: 'โทรหาช่าง' }, ctx());
