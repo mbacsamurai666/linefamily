@@ -37,6 +37,16 @@ export function initLiff(): Promise<void> {
   return ready;
 }
 
+/**
+ * Open a link in the phone's real browser rather than LINE's in-app one.
+ * Used for the backup download: a file saved inside the in-app browser is a
+ * file nobody can find again.
+ */
+export async function openExternal(url: string): Promise<void> {
+  await initLiff();
+  liff.openWindow({ url, external: true });
+}
+
 export async function getIdToken(): Promise<string> {
   await initLiff();
   if (!liff.isLoggedIn()) {

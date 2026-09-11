@@ -3,6 +3,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { validateSignature, type WebhookEvent } from '@line/bot-sdk';
 import type { ApiDeps } from '../api/router.js';
 import { createApiRouter } from '../api/router.js';
+import { exportFamily } from '../modules/export.js';
 import type { HealthReport } from '../modules/health.js';
 import type { WebhookDeps } from './webhook.js';
 import { handleEvent } from './webhook.js';
@@ -63,6 +64,23 @@ export function createApp(deps: AppDeps) {
     // It never changes, and LINE's own cache should keep it out of our queries.
     c.header('cache-control', 'public, max-age=604800, immutable');
     return c.body(new Uint8Array(row.png));
+  });
+
+  /**
+   * The backup file itself, opened in a real browser. The token in the path is
+   * the whole credential — unguessable, good for ten minutes, and issued only
+   * to a member of that family (see /api/export/link).
+   */
+  app.get('/export/:token', async (c) => {
+    const familyId = deps.liffApi?.exportLinks?.resolve(c.req.param('token'));
+    if (!familyId) return c.text('ลิงก์หมดอายุแล้ว เปิดแอปแล้วกดดาวน์โหลดใหม่อีกครั้งครับ', 404);
+
+    const data = await exportFamily(deps.prisma, familyId, new Date());
+    const stamp = new Date().toISOString().slice(0, 10);
+    c.header('content-type', 'application/json; charset=utf-8');
+    c.header('content-disposition', `attachment; filename="familys-management-${stamp}.json"`);
+    c.header('cache-control', 'no-store');
+    return c.body(JSON.stringify(data, null, 2));
   });
 
   if (deps.liffApi) {

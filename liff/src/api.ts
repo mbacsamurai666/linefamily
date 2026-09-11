@@ -154,6 +154,29 @@ export interface DashboardData {
   netWorth: NetWorth;
 }
 
+export type SetupKey =
+  | 'bills'
+  | 'documents'
+  | 'medications'
+  | 'chores'
+  | 'emergency'
+  | 'budgets'
+  | 'birthdays';
+
+export interface SetupItem {
+  key: SetupKey;
+  label: string;
+  hint: string;
+  done: boolean;
+  count: number;
+}
+
+export interface Emergency {
+  bloodType: string | null;
+  allergies: string | null;
+  conditions: string | null;
+}
+
 export interface Loan {
   id: string;
   borrowerName: string;
@@ -258,6 +281,13 @@ export const api = {
     rrule?: string;
   }) => request('/events', { method: 'POST', body: JSON.stringify(body) }),
   dashboard: () => request<DashboardData>('/dashboard'),
+  setup: () => request<{ items: SetupItem[]; doneCount: number }>('/setup'),
+  emergency: () => request<Emergency>('/me/emergency'),
+  saveEmergency: (body: Partial<Emergency>) =>
+    request('/me/emergency', { method: 'PATCH', body: JSON.stringify(body) }),
+  /** A short-lived link to this family's backup file, to open outside LINE. */
+  exportLink: () =>
+    request<{ url: string; expiresInMinutes: number }>('/export/link', { method: 'POST' }),
   loans: () => request<{ items: Loan[] }>('/loans'),
   addLoan: (body: { borrowerName: string; principalAmountBaht: number; dueAt?: string; note?: string }) =>
     request('/loans', { method: 'POST', body: JSON.stringify(body) }),

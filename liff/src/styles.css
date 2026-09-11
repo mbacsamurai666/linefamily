@@ -536,6 +536,76 @@ select {
   width: 64px;
 }
 
+/* -------------------------------------------------- setup checklist */
+
+.setup-card {
+  border: 1.5px dashed var(--brand);
+  background: var(--brand-tint);
+}
+
+.setup-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text);
+}
+
+.setup-head .dash-section-heading {
+  flex: 1;
+  margin: 0;
+}
+
+.setup-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-dark);
+  font-variant-numeric: tabular-nums;
+}
+
+.setup-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface);
+  overflow: hidden;
+  margin: 8px 0 10px;
+}
+
+.setup-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand);
+  transition: width 0.3s ease;
+}
+
+.setup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.setup-item .row-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.setup-chat-hint {
+  margin-top: 2px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 11px;
+  color: var(--brand-dark);
+}
+
 /* -------------------------------------------------- calendar board
  * A paper wall calendar: spiral rings, a pink header band, and squares with
  * the appointments written in. Sundays and public holidays go red, the way

@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Hono } from 'hono';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
+import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js';
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
@@ -12,6 +13,7 @@ import {
   listLoans,
 } from '../modules/loanAssetDeposit.js';
 import { persistDraft, resolveRotation } from '../modules/persist.js';
+import { computeSetupStatus } from '../modules/setup.js';
 import {
   deleteAsset,
   deleteBill,
@@ -53,6 +55,9 @@ import type { VerifiedLiffUser } from './liffAuth.js';
 export interface ApiDeps {
   prisma: PrismaClient;
   defaultTimezone: string;
+  /** Omit both to run without the backup download. */
+  exportLinks?: ExportLinkStore;
+  publicBaseUrl?: string;
   /** Injectable so tests never make a real network call to LINE. */
   verifyToken: (idToken: string) => Promise<VerifiedLiffUser | null>;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
@@ -208,6 +213,12 @@ const depositBody = z.object({
 
 const depositAdjustBody = z.object({ amountBaht: z.number() });
 
+const emergencyBody = z.object({
+  bloodType: z.string().max(8).nullable().optional(),
+  allergies: z.string().max(300).nullable().optional(),
+  conditions: z.string().max(300).nullable().optional(),
+});
+
 const eventPatchBody = z.object({
   title: z.string().min(1).optional(),
   startAt: z.string().optional(),
@@ -351,6 +362,60 @@ export function createApiRouter(deps: ApiDeps) {
         familyId: m.family.id,
         label: m.family.members.map((o) => o.displayName).join(', ') || 'กลุ่มที่มีแค่คุณ',
       })),
+    });
+  });
+
+  /** What the family has not set up yet — the checklist on the dashboard. */
+  app.get('/setup', async (c) => {
+    const member = c.get('member');
+    return c.json(await computeSetupStatus(deps.prisma, member.familyId, member.memberId));
+  });
+
+  /**
+   * Emergency details belong to the person they are about: this only ever
+   * writes the caller's own row, exactly like the chat command does.
+   */
+  app.patch('/me/emergency', async (c) => {
+    const member = c.get('member');
+    const parsed = emergencyBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const trimmed = (v: string | null | undefined) =>
+      v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim();
+
+    await deps.prisma.member.update({
+      where: { id: member.memberId },
+      data: definedOnly({
+        bloodType: trimmed(parsed.data.bloodType),
+        allergies: trimmed(parsed.data.allergies),
+        conditions: trimmed(parsed.data.conditions),
+      }),
+    });
+    return c.json({ ok: true });
+  });
+
+  app.get('/me/emergency', async (c) => {
+    const member = c.get('member');
+    const row = await deps.prisma.member.findUniqueOrThrow({
+      where: { id: member.memberId },
+      select: { bloodType: true, allergies: true, conditions: true },
+    });
+    return c.json(row);
+  });
+
+  /**
+   * A link to this family's backup file, good for a few minutes. The app opens
+   * it in the real browser, which is the only place a download reliably lands.
+   */
+  app.post('/export/link', async (c) => {
+    const member = c.get('member');
+    if (!deps.exportLinks || !deps.publicBaseUrl) {
+      return c.json({ error: 'การสำรองข้อมูลยังไม่เปิดใช้บนเซิร์ฟเวอร์นี้' }, 503);
+    }
+    const token = deps.exportLinks.issue(member.familyId);
+    return c.json({
+      url: `${deps.publicBaseUrl.replace(/\/+$/, '')}/export/${token}`,
+      expiresInMinutes: EXPORT_LINK_TTL_MINUTES,
     });
   });
 

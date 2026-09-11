@@ -9,6 +9,7 @@ import { OpenAiCommandRewriter, type CommandRewriter } from './intent/commandRew
 import { RuleIntentParser } from './intent/RuleIntentParser.js';
 import type { IntentParser } from './intent/types.js';
 import { VisionParser } from './intent/VisionParser.js';
+import { ExportLinkStore } from './api/exportLinks.js';
 import { verifyLiffIdToken } from './api/liffAuth.js';
 import { createApp } from './line/app.js';
 import { renderDigestImage } from './line/digestImage.js';
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
   });
 
   const drafts = new DraftStore();
+  const exportLinks = new ExportLinkStore();
   const photoTargets = new PhotoTargetStore();
   const openai = cfg.aiUsable ? new OpenAI({ apiKey: cfg.OPENAI_API_KEY }) : null;
   const parser = buildParser();
@@ -119,6 +121,8 @@ async function main(): Promise<void> {
           liffApi: {
             prisma,
             defaultTimezone: cfg.TZ,
+            exportLinks,
+            publicBaseUrl: cfg.PUBLIC_BASE_URL,
             verifyToken: (idToken: string) => verifyLiffIdToken(idToken, cfg.LIFF_CHANNEL_ID),
             log,
           },

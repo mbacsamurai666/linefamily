@@ -16,10 +16,14 @@ import {
   type Loan,
   type MedicationItem,
   type Me,
+  type Emergency,
+  type SetupItem,
+  type SetupKey,
   type ShoppingItem,
   type TaskItem,
   type TransactionItem,
 } from './api.js';
+import { openExternal } from './liff.js';
 import { Mascot, moodForDay } from './Mascot.js';
 import {
   ASSET_CATEGORIES,
@@ -80,6 +84,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
   // A day tapped on the dashboard's board, for the calendar tab to open on.
   const [calendarDay, setCalendarDay] = useState<string | null>(null);
+  // A setup-checklist line tapped, for the manage tab to open on.
+  const [manageFocus, setManageFocus] = useState<SetupKey | null>(null);
 
   useEffect(() => {
     api.me().then(setMe).catch((e: Error) => setError(e.message));
@@ -124,13 +130,17 @@ export default function App() {
               setCalendarDay(key);
               setTab('agenda');
             }}
+            onOpenSetup={(key) => {
+              setManageFocus(key);
+              setTab('manage');
+            }}
           />
         )}
         {tab === 'tasks' && <TasksTab timezone={me.timezone} />}
         {tab === 'agenda' && <CalendarTab timezone={me.timezone} initialDay={calendarDay} />}
         {tab === 'money' && <MoneyTab />}
         {tab === 'shopping' && <ShoppingTab />}
-        {tab === 'manage' && <ManageTab />}
+        {tab === 'manage' && <ManageTab focus={manageFocus} />}
       </main>
 
       <nav className="tabbar">
@@ -148,8 +158,10 @@ export default function App() {
             key={key}
             className={tab === key ? 'active' : ''}
             onClick={() => {
-              // The tab bar always opens the calendar on today.
+              // The tab bar always opens the calendar on today, and the
+              // manage tab plain rather than jumped into a section.
               if (key === 'agenda') setCalendarDay(null);
+              if (key === 'manage') setManageFocus(null);
               setTab(key);
             }}
           >
@@ -241,6 +253,74 @@ function RowActions({
   );
 }
 
+/** Where a checklist item is dealt with: in the app, or by typing in the chat. */
+const SETUP_CHAT_HINT: Partial<Record<SetupKey, string>> = {
+  budgets: 'พิมพ์ในแชต: ตั้งงบ ค่าไฟ 1000 บาท',
+  birthdays: 'พิมพ์ในแชต: วันเกิด น้องพร 5 ม.ค. 2560',
+};
+
+/**
+ * What the house has not set up yet.
+ *
+ * The bot only reminds about things somebody entered, and a family that has
+ * entered appointments and nothing else has no way of knowing what it is
+ * missing. Shown until everything is ticked, then gone for good — it is a
+ * checklist, not a nag.
+ */
+function SetupChecklist({
+  items,
+  doneCount,
+  onOpen,
+}: {
+  items: SetupItem[];
+  doneCount: number;
+  onOpen: (key: SetupKey) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const todo = items.filter((i) => !i.done);
+  if (todo.length === 0) return null;
+
+  return (
+    <div className="dash-section setup-card">
+      <button type="button" className="setup-head" onClick={() => setOpen(!open)}>
+        <span className="dash-section-heading">✨ เริ่มต้นใช้งาน</span>
+        <span className="setup-count">
+          {doneCount}/{items.length}
+        </span>
+        <span className="agenda-chevron">{open ? '▾' : '▸'}</span>
+      </button>
+
+      <div className="setup-progress">
+        <span style={{ width: `${(doneCount / items.length) * 100}%` }} />
+      </div>
+
+      {open ? (
+        <ul className="list">
+          {todo.map((item) => {
+            const hint = SETUP_CHAT_HINT[item.key];
+            return (
+              <li key={item.key} className="setup-item">
+                <div className="agenda-text">
+                  <div>{item.label}</div>
+                  <div className="muted">{item.hint}</div>
+                  {hint && <div className="muted setup-chat-hint">{hint}</div>}
+                </div>
+                {!hint && (
+                  <button type="button" className="row-btn" onClick={() => onOpen(item.key)}>
+                    ตั้งค่า
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="muted">ยังไม่ได้ตั้ง {todo.length} อย่าง — แตะเพื่อดู</p>
+      )}
+    </div>
+  );
+}
+
 function UpcomingSection({ heading, items }: { heading: string; items: AgendaItem[] }) {
   if (items.length === 0) return null;
   return (
@@ -267,16 +347,19 @@ function DashboardTab({
   timezone,
   displayName,
   onOpenDay,
+  onOpenSetup,
 }: {
   timezone: string;
   displayName: string;
   onOpenDay: (key: string) => void;
+  onOpenSetup: (key: SetupKey) => void;
 }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [incomeAmount, setIncomeAmount] = useState('');
   const [saving, setSaving] = useState(false);
   const [board, setBoard] = useState<{ events: EventSummary[]; holidays: Holiday[] } | null>(null);
+  const [setup, setSetup] = useState<{ items: SetupItem[]; doneCount: number } | null>(null);
 
   const todayKey = useMemo(() => dayKey(new Date().toISOString(), timezone), [timezone]);
 
@@ -289,6 +372,8 @@ function DashboardTab({
       .events(from, to)
       .then((r) => setBoard({ events: r.items, holidays: r.holidays }))
       .catch(() => setBoard({ events: [], holidays: [] }));
+    // Also a nicety: a checklist that fails to load is not worth an error page.
+    api.setup().then(setSetup).catch(() => setSetup(null));
   }, []);
 
   const addIncome = async (e: React.FormEvent) => {
@@ -387,6 +472,10 @@ function DashboardTab({
         </div>
         <div className="room-desk" />
       </div>
+
+      {setup && (
+        <SetupChecklist items={setup.items} doneCount={setup.doneCount} onOpen={onOpenSetup} />
+      )}
 
       <div className="dash-section">
         <div className="dash-section-heading">⏰ กำลังจะถึง</div>
@@ -2414,21 +2503,192 @@ function TasksTab({ timezone }: { timezone: string }) {
  * was entered wrong, which is the whole reason this tab exists. Each empty
  * state doubles as a reminder of the phrase that creates one.
  */
-function ManageTab() {
+function ManageTab({ focus }: { focus?: SetupKey | null }) {
+  // Arriving from the setup checklist should land on the thing that was
+  // tapped, with its form already open — not at the top of a long page.
+  useEffect(() => {
+    if (!focus) return;
+    document.getElementById(`section-${focus}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focus]);
+
   return (
     <div>
-      <BillsSection />
-      <DocumentsSection />
-      <MedicationsSection />
-      <ChoresSection />
+      <BillsSection openAdd={focus === 'bills'} />
+      <DocumentsSection openAdd={focus === 'documents'} />
+      <MedicationsSection openAdd={focus === 'medications'} />
+      <ChoresSection openAdd={focus === 'chores'} />
+      <EmergencySection openEdit={focus === 'emergency'} />
+      <BackupSection />
     </div>
   );
 }
 
-function BillsSection() {
+/**
+ * The caller's own emergency card. Only ever their own row — the same rule the
+ * chat command keeps, for the same reason.
+ */
+function EmergencySection({ openEdit }: { openEdit?: boolean }) {
+  const [data, setData] = useState<Emergency | null>(null);
+  const [editing, setEditing] = useState(openEdit ?? false);
+  const [bloodType, setBloodType] = useState('');
+  const [allergies, setAllergies] = useState('');
+  const [conditions, setConditions] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () =>
+    api
+      .emergency()
+      .then((r) => {
+        setData(r);
+        setBloodType(r.bloodType ?? '');
+        setAllergies(r.allergies ?? '');
+        setConditions(r.conditions ?? '');
+      })
+      .catch((e: Error) => setError(e.message));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.saveEmergency({
+        bloodType: bloodType.trim() || null,
+        allergies: allergies.trim() || null,
+        conditions: conditions.trim() || null,
+      });
+      setEditing(false);
+      await load();
+    } catch (err) {
+      setError(readableError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  const empty = !data?.bloodType && !data?.allergies && !data?.conditions;
+
+  return (
+    <div className="dash-section" id="section-emergency">
+      <div className="dash-section-heading">🚑 ข้อมูลฉุกเฉินของคุณ</div>
+
+      {!editing && (
+        <>
+          {empty ? (
+            <p className="empty">ยังไม่ได้กรอก — ตอนฉุกเฉินคนในบ้านเปิดดูได้ทันที</p>
+          ) : (
+            <ul className="list">
+              <li className="agenda-item">
+                <div className="agenda-text">
+                  <div>กรุ๊ปเลือด {data?.bloodType || '—'}</div>
+                  <div className="muted">แพ้ยา: {data?.allergies || 'ไม่มี'}</div>
+                  <div className="muted">โรคประจำตัว: {data?.conditions || 'ไม่มี'}</div>
+                </div>
+              </li>
+            </ul>
+          )}
+          <button type="button" className="form-toggle" onClick={() => setEditing(true)}>
+            {empty ? '＋ กรอกข้อมูลฉุกเฉิน' : 'แก้ไข'}
+          </button>
+        </>
+      )}
+
+      {editing && (
+        <form className="entry-form" onSubmit={save}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="em-blood">กรุ๊ปเลือด</label>
+              <input
+                id="em-blood"
+                type="text"
+                placeholder="เช่น O"
+                value={bloodType}
+                onChange={(e) => setBloodType(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="em-allergies">
+              แพ้ยา/แพ้อาหาร <span className="optional">(ไม่บังคับ)</span>
+            </label>
+            <input
+              id="em-allergies"
+              type="text"
+              placeholder="เช่น เพนิซิลลิน"
+              value={allergies}
+              onChange={(e) => setAllergies(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="em-conditions">
+              โรคประจำตัว <span className="optional">(ไม่บังคับ)</span>
+            </label>
+            <input
+              id="em-conditions"
+              type="text"
+              placeholder="เช่น เบาหวาน"
+              value={conditions}
+              onChange={(e) => setConditions(e.target.value)}
+            />
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setEditing(false)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+          <div className="muted">ข้อมูลนี้ไม่เคยถูกส่งให้ AI และแก้ได้เฉพาะของตัวเอง</div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+/** One file with everything in it, for the family to keep somewhere else. */
+function BackupSection() {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const download = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const { url, expiresInMinutes } = await api.exportLink();
+      await openExternal(url);
+      setNote(`เปิดในเบราว์เซอร์แล้ว ลิงก์ใช้ได้ ${expiresInMinutes} นาที`);
+    } catch (err) {
+      setNote(readableError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dash-section" id="section-backup">
+      <div className="dash-section-heading">💾 สำรองข้อมูล</div>
+      <p className="muted">
+        ดาวน์โหลดทุกอย่างที่บันทึกไว้เป็นไฟล์เดียว (นัดหมาย เงิน บิล เอกสาร ยา เวร ของที่ต้องซื้อ
+        ทรัพย์สิน) เก็บไว้เผื่อฐานข้อมูลมีปัญหา
+      </p>
+      <button type="button" className="form-toggle" onClick={download} disabled={busy}>
+        {busy ? 'กำลังสร้างลิงก์...' : '⬇️ ดาวน์โหลดไฟล์สำรอง'}
+      </button>
+      {note && <p className="muted">{note}</p>}
+    </div>
+  );
+}
+
+function BillsSection({ openAdd }: { openAdd?: boolean }) {
   const [bills, setBills] = useState<BillItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(openAdd ?? false);
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [dueDay, setDueDay] = useState('');
@@ -2490,7 +2750,7 @@ function BillsSection() {
   if (error) return <p className="error">{error}</p>;
 
   return (
-    <div className="dash-section">
+    <div className="dash-section" id="section-bills">
       <div className="dash-section-heading">🧾 บิลประจำเดือน</div>
       {!bills ? (
         <p className="loading">กำลังโหลด...</p>
@@ -2595,10 +2855,10 @@ function BillsSection() {
   );
 }
 
-function DocumentsSection() {
+function DocumentsSection({ openAdd }: { openAdd?: boolean }) {
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(openAdd ?? false);
   const [name, setName] = useState('');
   const [type, setType] = useState('OTHER');
   const [expiresAt, setExpiresAt] = useState('');
@@ -2648,7 +2908,7 @@ function DocumentsSection() {
   if (error) return <p className="error">{error}</p>;
 
   return (
-    <div className="dash-section">
+    <div className="dash-section" id="section-documents">
       <div className="dash-section-heading">📄 เอกสารที่ต้องต่ออายุ</div>
       {!documents ? (
         <p className="loading">กำลังโหลด...</p>
@@ -2736,10 +2996,10 @@ function DocumentsSection() {
   );
 }
 
-function MedicationsSection() {
+function MedicationsSection({ openAdd }: { openAdd?: boolean }) {
   const [meds, setMeds] = useState<MedicationItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(openAdd ?? false);
   const [name, setName] = useState('');
   const [dosage, setDosage] = useState('');
   const [times, setTimes] = useState('08:00, 20:00');
@@ -2808,7 +3068,7 @@ function MedicationsSection() {
   if (error) return <p className="error">{error}</p>;
 
   return (
-    <div className="dash-section">
+    <div className="dash-section" id="section-medications">
       <div className="dash-section-heading">💊 ยาประจำตัว</div>
       {!meds ? (
         <p className="loading">กำลังโหลด...</p>
@@ -2910,10 +3170,10 @@ function MedicationsSection() {
   );
 }
 
-function ChoresSection() {
+function ChoresSection({ openAdd }: { openAdd?: boolean }) {
   const [chores, setChores] = useState<ChoreItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(openAdd ?? false);
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState('WEEKLY');
   const [rotation, setRotation] = useState('');
@@ -2980,7 +3240,7 @@ function ChoresSection() {
   if (error) return <p className="error">{error}</p>;
 
   return (
-    <div className="dash-section">
+    <div className="dash-section" id="section-chores">
       <div className="dash-section-heading">🧹 งานบ้าน</div>
       {!chores ? (
         <p className="loading">กำลังโหลด...</p>
