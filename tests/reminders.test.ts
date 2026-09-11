@@ -189,6 +189,64 @@ describe('a simulated month of reminders', () => {
   });
 });
 
+/**
+ * Reminders that outlive their digest slot are the failure this whole app is
+ * for: the family is not told, and nothing looks broken. It happened for real —
+ * two reminders sat PENDING for five days because the process was not running
+ * at 07:00 or 20:00 on any of them.
+ */
+describe('a digest slot the engine was not running for', () => {
+  it('flushes what the downtime swallowed on the first tick back', async () => {
+    const stores = new MemoryStores(500);
+    const missed = DateTime.fromISO('2026-09-06T13:00', { zone: ZONE });
+    stores.rows.push(job('stale', missed));
+
+    // Back up five days later, in the middle of the afternoon — nowhere near a slot.
+    const back = DateTime.fromISO('2026-09-11T13:22', { zone: ZONE });
+    await buildEngine(stores, { now: () => back }).tick();
+
+    expect(stores.pushes).toHaveLength(1);
+    expect(stores.pushes[0]?.jobIds).toEqual(['stale']);
+  });
+
+  it('does not reach forward into reminders that are not late yet', async () => {
+    const stores = new MemoryStores(500);
+    const back = DateTime.fromISO('2026-09-11T13:22', { zone: ZONE });
+    // Due at 18:00 today: it belongs to tonight's digest, not to this sweep.
+    stores.rows.push(job('later', back.set({ hour: 18, minute: 0 })));
+
+    await buildEngine(stores, { now: () => back }).tick();
+
+    expect(stores.pushes).toHaveLength(0);
+  });
+
+  it('sweeps once, not on every tick until the next slot', async () => {
+    const stores = new MemoryStores(500);
+    const back = DateTime.fromISO('2026-09-11T13:22', { zone: ZONE });
+    stores.rows.push(job('stale', back.minus({ days: 2 })));
+
+    let cursor = back;
+    const engine = buildEngine(stores, { now: () => cursor });
+    for (let i = 0; i < 30; i++) {
+      await engine.tick();
+      cursor = cursor.plus({ minutes: 1 });
+    }
+
+    expect(stores.pushes).toHaveLength(1);
+  });
+
+  it('still announces the day ahead when it boots right on the slot', async () => {
+    const stores = new MemoryStores(500);
+    const at = DateTime.fromISO('2026-09-11T07:00', { zone: ZONE });
+    stores.rows.push(job('morning', at.set({ hour: 15 })));
+
+    await buildEngine(stores, { now: () => at.plus({ seconds: 20 }) }).tick();
+
+    expect(stores.pushes).toHaveLength(1);
+    expect(stores.pushes[0]?.jobIds).toEqual(['morning']);
+  });
+});
+
 describe('urgent lane', () => {
   const at = DateTime.fromISO('2026-09-04T09:00', { zone: ZONE });
 

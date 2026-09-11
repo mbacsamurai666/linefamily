@@ -59,14 +59,38 @@ export function nextDigestSlot(now: DateTime, morningHour: number, eveningHour: 
   return now.plus({ days: 1 }).startOf('day').set({ hour: morningHour });
 }
 
-/** True when `now` is inside the one-minute window that opens a digest slot. */
-function isDigestSlotNow(now: DateTime, morningHour: number, eveningHour: number): boolean {
-  return digestSlots(now, morningHour, eveningHour).some(
-    (slot) => now >= slot && now < slot.plus({ minutes: 1 }),
-  );
+/**
+ * The most recent slot at or before `now`, reaching back into yesterday when
+ * the day's first slot has not come round yet.
+ *
+ * This is the identity of the digest "round" we are currently in, and it is what
+ * makes the engine restartable. Matching a one-minute window instead meant a
+ * process that was asleep, deploying, or merely ticking half a second late at
+ * 07:00 skipped that digest entirely and every job in it waited — which is how
+ * two reminders sat PENDING for five days without anything being broken enough
+ * to notice.
+ */
+export function currentDigestSlot(
+  now: DateTime,
+  morningHour: number,
+  eveningHour: number,
+): DateTime {
+  const passed = digestSlots(now, morningHour, eveningHour).filter((slot) => slot <= now);
+  const last = passed[passed.length - 1];
+  if (last) return last;
+  return now.minus({ days: 1 }).startOf('day').set({ hour: eveningHour });
 }
 
 export class ReminderEngine {
+  /**
+   * familyId -> the slot whose digest this process has already dealt with.
+   * In memory on purpose: after a restart every family looks unhandled, so the
+   * first tick checks for anything the downtime swallowed. That check costs one
+   * query and sends nothing when the queue is clean, and jobs it does send are
+   * marked SENT, so a crash-looping container cannot push the same digest twice.
+   */
+  private readonly handledSlot = new Map<string, string>();
+
   constructor(private readonly opts: EngineOptions) {}
 
   /**
@@ -79,9 +103,33 @@ export class ReminderEngine {
 
     for (const family of await this.opts.families.listActive()) {
       const localNow = now.setZone(family.timezone);
-      if (isDigestSlotNow(localNow, this.opts.morningHour, this.opts.eveningHour)) {
-        await this.runDigestFor(family.familyId, localNow);
-      }
+      const slot = currentDigestSlot(localNow, this.opts.morningHour, this.opts.eveningHour);
+      const key = slot.toISO() ?? '';
+
+      const seen = this.handledSlot.get(family.familyId);
+      if (seen === key) continue;
+
+      /**
+       * On time means this very tick is the one that crossed the slot — the
+       * engine was already running, or it booted right on top of it. Those
+       * rounds look ahead to the next slot, which is what lets the morning
+       * digest announce the whole day.
+       *
+       * Anything else is a round this process missed while it was not running,
+       * and it sweeps up only what is already overdue. Reaching forward there
+       * would spend a push on things that were not late yet — including urgent
+       * items the budget guard had just demoted, whose entire point is to wait
+       * and travel with company.
+       */
+      const onTime = seen !== undefined || localNow < slot.plus({ minutes: 2 });
+      const horizon = onTime
+        ? nextDigestSlot(localNow, this.opts.morningHour, this.opts.eveningHour)
+        : slot;
+
+      await this.runDigestFor(family.familyId, localNow, horizon);
+      // Marked whether or not anything went out: an empty queue is a handled
+      // round, and re-asking every 60 seconds until the next slot is waste.
+      this.handledSlot.set(family.familyId, key);
     }
   }
 
@@ -133,9 +181,11 @@ export class ReminderEngine {
    * Collect everything that would have fired before the next slot and send it
    * as a single push. This is what turns N reminders into 1 message.
    */
-  private async runDigestFor(familyId: string, localNow: DateTime): Promise<void> {
-    const horizon = nextDigestSlot(localNow, this.opts.morningHour, this.opts.eveningHour);
-
+  private async runDigestFor(
+    familyId: string,
+    localNow: DateTime,
+    horizon: DateTime,
+  ): Promise<void> {
     const due = await this.opts.jobs.claimDue(
       horizon.toJSDate(),
       'DIGEST',
