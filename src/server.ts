@@ -11,6 +11,7 @@ import type { IntentParser } from './intent/types.js';
 import { VisionParser } from './intent/VisionParser.js';
 import { verifyLiffIdToken } from './api/liffAuth.js';
 import { createApp } from './line/app.js';
+import { renderDigestImage } from './line/digestImage.js';
 import { DraftStore } from './line/drafts.js';
 import { PhotoTargetStore } from './line/photoTargets.js';
 import { ReminderEngine, yearMonthOf } from './reminders/engine.js';
@@ -124,6 +125,13 @@ async function main(): Promise<void> {
         }
       : {}),
   });
+
+  // Draw one throwaway board at boot. The digest picture needs fonts and
+  // mascot files that live in the image rather than in node_modules, and a
+  // missing file would otherwise surface at 07:00 as a digest with no picture.
+  void renderDigestImage({ jobs: [], slot: DateTime.now().setZone(cfg.TZ) })
+    .then((png) => log('digest image ready', { bytes: png.length }))
+    .catch((err) => log('digest image unavailable', { err: String(err) }));
 
   const server = serve({ fetch: app.fetch, port: cfg.PORT }, (info) => {
     log('listening', { port: info.port, webhook: `${cfg.PUBLIC_BASE_URL}/line/webhook` });
