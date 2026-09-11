@@ -1,0 +1,14 @@
+# Belt and braces: .env is already in .gitignore (which the CLI honours) and in
+# .dockerignore (so the build never copies it) — but the real LINE tokens and
+# the database password live in it, so it is named explicitly here too.
+.env
+.env.local
+liff/.env
+liff/.env.local
+
+node_modules
+liff/node_modules
+dist
+liff/dist
+.git
+*.log
