@@ -471,7 +471,10 @@ describe('persistDraft — chores', () => {
     const chore = await db.prisma.chore.findFirstOrThrow();
     expect(chore.rotationMemberIds).toEqual([memberId, father.id]);
     expect(chore.rotationCursor).toBe(0);
-    expect(DateTime.fromJSDate(chore.nextDueAt).toFormat("yyyy-MM-dd'T'HH:mm")).toBe(
+    // In the family's zone, not the machine's: the same instant is 09:00 in
+    // Bangkok and 02:00 on a UTC CI runner, and the chore is due at 09:00 for
+    // the family.
+    expect(DateTime.fromJSDate(chore.nextDueAt, { zone: ZONE }).toFormat("yyyy-MM-dd'T'HH:mm")).toBe(
       firstChoreDueAt(NOW, 'DAILY').toFormat("yyyy-MM-dd'T'HH:mm"),
     );
 
@@ -696,7 +699,8 @@ describe('generateMonthSummaryJob', () => {
 
     const jobs = await db.prisma.notificationJob.findMany({ where: { kind: 'MONTH_SUMMARY' } });
     expect(jobs).toHaveLength(1);
-    const dueAt = DateTime.fromJSDate(jobs[0]!.dueAt);
+    // 21:00 for the family, whatever zone the test machine keeps.
+    const dueAt = DateTime.fromJSDate(jobs[0]!.dueAt, { zone: ZONE });
     expect(dueAt.day).toBe(NOW.daysInMonth);
     expect(dueAt.hour).toBe(21);
     expect((jobs[0]?.payload as { text: string }).text).toContain('250');
