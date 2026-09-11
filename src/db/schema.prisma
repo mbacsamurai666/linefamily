@@ -100,7 +100,10 @@ model Event {
 
   /// RFC 5545 RRULE string for repeating appointments, null for one-offs.
   rrule String?
-  note  String?
+  /// Occurrences of the rrule that no longer happen here — skipped, or moved
+  /// out into their own one-off Event. RFC 5545's EXDATE, as start instants.
+  exdates DateTime[] @default([])
+  note    String?
 
   /// Minutes before startAt to remind. Default = 7 days / 1 day / 2 hours.
   reminderOffsets Int[] @default([10080, 1440, 120])

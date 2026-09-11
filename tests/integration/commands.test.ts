@@ -248,6 +248,7 @@ describe('tryDirectCommand — สรุปหนี้', () => {
     const result = await tryDirectCommand('สรุปหนี้', ctx());
     expect(result?.reply).toContain('แม่: มีคนติดอยู่ 50 บาท');
     expect(result?.reply).toContain('พี่เอ: ติดคนอื่นอยู่ 50 บาท');
+    expect(result?.reply).toContain('พี่เอ โอนให้ แม่ 50 บาท');
   });
 
   it('says so when nothing has been split this month', async () => {

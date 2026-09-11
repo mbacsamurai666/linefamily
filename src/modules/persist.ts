@@ -260,23 +260,39 @@ async function persistMed(
   return { summary: `ตั้งเตือนยา "${draft.name}" แล้ว` };
 }
 
+/**
+ * A chore rotation is typed as display names; this resolves them to member
+ * ids, keeping the order the family listed them in, and reports the names it
+ * could not place.
+ */
+export async function resolveRotation(
+  prisma: PrismaClient,
+  familyId: string,
+  names: string[],
+): Promise<{ memberIds: string[]; unresolved: string[] }> {
+  if (names.length === 0) return { memberIds: [], unresolved: [] };
+
+  const found = await prisma.member.findMany({
+    where: { familyId, displayName: { in: names } },
+    select: { id: true, displayName: true },
+  });
+  const idByName = new Map(found.map((m) => [m.displayName, m.id]));
+
+  return {
+    memberIds: names.map((n) => idByName.get(n)).filter((id): id is string => id !== undefined),
+    unresolved: names.filter((n) => !idByName.has(n)),
+  };
+}
+
 async function persistChore(
   draft: Extract<Draft, { kind: 'chore' }>,
   ctx: PersistContext,
 ): Promise<PersistResult> {
-  // Rotation is typed as display names; resolve to member ids here, keeping
-  // the order the family listed them in.
-  let rotationMemberIds: string[] = [];
-  if (draft.rotationNames.length > 0) {
-    const found = await ctx.prisma.member.findMany({
-      where: { familyId: ctx.familyId, displayName: { in: draft.rotationNames } },
-      select: { id: true, displayName: true },
-    });
-    const idByName = new Map(found.map((m) => [m.displayName, m.id]));
-    rotationMemberIds = draft.rotationNames
-      .map((n) => idByName.get(n))
-      .filter((id): id is string => id !== undefined);
-  }
+  const { memberIds: rotationMemberIds } = await resolveRotation(
+    ctx.prisma,
+    ctx.familyId,
+    draft.rotationNames,
+  );
 
   const chore = await ctx.prisma.chore.create({
     data: {

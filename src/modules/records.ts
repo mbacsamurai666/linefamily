@@ -3,6 +3,7 @@ import type { DateTime } from 'luxon';
 import type { AssetCategory } from '../intent/assetTypes.js';
 import type { EventCategory } from '../intent/categories.js';
 import type { DocumentType } from '../intent/documentTypes.js';
+import { expandOccurrences } from '../reminders/occurrences.js';
 import {
   checkBudgetAlert,
   generateBillJobs,
@@ -85,15 +86,23 @@ export async function updateEvent(
 ): Promise<boolean> {
   const existing = await ctx.prisma.event.findFirst({
     where: { id, familyId: ctx.familyId },
-    select: { id: true },
+    select: { id: true, startAt: true, exdates: true },
   });
   if (!existing) return false;
+
+  // Moving the whole series carries its exceptions with it: "skip the 21st"
+  // should still skip the 21st after the appointment moves from 9:00 to 10:00.
+  const shiftMs =
+    patch.startAt !== undefined ? patch.startAt.toMillis() - existing.startAt.getTime() : 0;
 
   await ctx.prisma.event.update({
     where: { id },
     data: {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.startAt !== undefined ? { startAt: patch.startAt.toJSDate() } : {}),
+      ...(shiftMs !== 0 && existing.exdates.length > 0
+        ? { exdates: existing.exdates.map((d) => new Date(d.getTime() + shiftMs)) }
+        : {}),
       ...(patch.allDay !== undefined ? { allDay: patch.allDay } : {}),
       ...(patch.category !== undefined ? { category: patch.category } : {}),
       ...(patch.location !== undefined ? { location: patch.location } : {}),
@@ -119,6 +128,104 @@ export async function updateEvent(
 
   await generateEventJobs(ctx.prisma, id, ctx.now);
   return true;
+}
+
+/**
+ * A repeating appointment of this family, and proof that `occurrence` really
+ * is one of its dates — so a stale screen or a guessed timestamp cannot add a
+ * meaningless exception.
+ */
+async function findOccurrence(ctx: RecordContext, id: string, occurrence: DateTime) {
+  const event = await ctx.prisma.event.findFirst({
+    where: { id, familyId: ctx.familyId, rrule: { not: null } },
+    include: { attendees: { select: { memberId: true } } },
+  });
+  if (!event?.rrule) return null;
+
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  let matches: DateTime[];
+  try {
+    matches = expandOccurrences(
+      event.startAt,
+      event.rrule,
+      zone,
+      occurrence.minus({ minutes: 1 }),
+      occurrence.plus({ minutes: 1 }),
+      1,
+      event.exdates,
+    );
+  } catch {
+    return null;
+  }
+  if (!matches.some((m) => m.toMillis() === occurrence.toMillis())) return null;
+
+  return event;
+}
+
+/** "ข้ามครั้งนี้" — one date of a repeating appointment stops happening. */
+export async function skipOccurrence(
+  ctx: RecordContext,
+  id: string,
+  occurrence: DateTime,
+): Promise<boolean> {
+  const event = await findOccurrence(ctx, id, occurrence);
+  if (!event) return false;
+
+  await ctx.prisma.event.update({
+    where: { id },
+    data: { exdates: { push: occurrence.toJSDate() } },
+  });
+  await generateEventJobs(ctx.prisma, id, ctx.now);
+  return true;
+}
+
+/**
+ * "แก้เฉพาะครั้งนี้" — one date of a repeating appointment becomes its own
+ * one-off, which can then be moved or renamed without touching the rest.
+ *
+ * The series gets an exception for that date and a copy takes its place, so
+ * everything the family already knows about the appointment — who it is for,
+ * where, the reminders — comes along unless the patch says otherwise.
+ * Returns the new one-off's id.
+ */
+export async function detachOccurrence(
+  ctx: RecordContext,
+  id: string,
+  occurrence: DateTime,
+  patch: EventPatch,
+): Promise<string | null> {
+  const series = await findOccurrence(ctx, id, occurrence);
+  if (!series) return null;
+
+  const durationMs = series.endAt ? series.endAt.getTime() - series.startAt.getTime() : null;
+
+  const single = await ctx.prisma.$transaction(async (tx) => {
+    await tx.event.update({
+      where: { id },
+      data: { exdates: { push: occurrence.toJSDate() } },
+    });
+    return tx.event.create({
+      data: {
+        familyId: series.familyId,
+        title: series.title,
+        category: series.category,
+        startAt: occurrence.toJSDate(),
+        endAt: durationMs === null ? null : new Date(occurrence.toMillis() + durationMs),
+        allDay: series.allDay,
+        location: series.location,
+        ownerId: series.ownerId,
+        note: series.note,
+        reminderOffsets: series.reminderOffsets,
+        attendees: { create: series.attendees.map((a) => ({ memberId: a.memberId })) },
+      },
+    });
+  });
+
+  // The copy is a one-off by definition, whatever the form sent.
+  const { rrule: _ignored, ...rest } = patch;
+  await updateEvent(ctx, single.id, rest);
+  await generateEventJobs(ctx.prisma, id, ctx.now);
+  return single.id;
 }
 
 export async function deleteEvent(ctx: RecordContext, id: string): Promise<boolean> {
@@ -337,6 +444,12 @@ export interface ChorePatch {
   name?: string;
   cadence?: 'DAILY' | 'WEEKLY' | 'MONTHLY';
   active?: boolean;
+  /**
+   * The new rotation, already resolved, in order. The first person in it is
+   * up next: the edit form lists the rotation starting from whoever's turn it
+   * is, so saving it unchanged leaves the turn where it was.
+   */
+  rotationMemberIds?: string[];
 }
 
 export async function updateChore(
@@ -356,6 +469,9 @@ export async function updateChore(
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.cadence !== undefined ? { cadence: patch.cadence } : {}),
       ...(patch.active !== undefined ? { active: patch.active } : {}),
+      ...(patch.rotationMemberIds !== undefined
+        ? { rotationMemberIds: patch.rotationMemberIds, rotationCursor: 0 }
+        : {}),
     },
   });
 

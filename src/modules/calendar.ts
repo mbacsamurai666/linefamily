@@ -83,6 +83,7 @@ export async function listCalendar(
           from,
           to,
           MAX_OCCURRENCES_PER_EVENT,
+          event.exdates,
         );
       } catch {
         // A malformed rule still shows the appointment it belongs to.

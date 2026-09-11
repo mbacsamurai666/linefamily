@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
-import { computeNetBalances } from './debts.js';
+import { computeNetBalances, settleUp } from './debts.js';
 import { computeExpenseSummary } from './expenseSummary.js';
 import { announcedHolidaysKnown } from '../thai/holidays.js';
 import { computeHealth } from './health.js';
@@ -292,7 +292,13 @@ async function handleDebtSummary(ctx: CommandContext): Promise<CommandResult> {
       : `${b.displayName}: ติดคนอื่นอยู่ ${formatSatang(Math.abs(b.balanceSatang))} บาท`,
   );
 
-  return { reply: `สรุปยอดหักลบเดือนนี้\n\n${lines.join('\n')}` };
+  const transfers = settleUp(balances).map(
+    (t) => `• ${t.from} โอนให้ ${t.to} ${formatSatang(t.amountSatang)} บาท`,
+  );
+
+  return {
+    reply: `สรุปยอดหักลบเดือนนี้\n\n${lines.join('\n')}\n\nเคลียร์กันแบบนี้ก็จบ:\n${transfers.join('\n')}`,
+  };
 }
 
 async function handleLoanSummary(ctx: CommandContext): Promise<CommandResult> {

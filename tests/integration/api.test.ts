@@ -75,7 +75,52 @@ describe('auth middleware', () => {
     const res = await authed('/me');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ memberId, familyId, displayName: 'แม่', timezone: ZONE });
+    expect(body).toMatchObject({ memberId, familyId, displayName: 'แม่', timezone: ZONE, families: [] });
+    // The LINE user id identifies the person across every group; the page has no use for it.
+    expect(body).not.toHaveProperty('lineUserId');
+  });
+});
+
+describe('someone in two family groups', () => {
+  let inLawsId: string;
+
+  beforeEach(async () => {
+    // The same LINE account, also in the in-laws' group with the bot.
+    const inLaws = await db.prisma.family.create({ data: { lineGroupId: 'G_inlaws', timezone: ZONE } });
+    inLawsId = inLaws.id;
+    await db.prisma.member.create({
+      data: { familyId: inLawsId, lineUserId: LINE_USER_ID, displayName: 'สะใภ้' },
+    });
+    await db.prisma.member.create({
+      data: { familyId: inLawsId, lineUserId: 'U_grandma', displayName: 'ย่า' },
+    });
+    await db.prisma.member.create({
+      data: { familyId, lineUserId: 'U_dad_home', displayName: 'พ่อ' },
+    });
+  });
+
+  it('lists both families, each labelled by who else is in it', async () => {
+    const body = (await authed('/me').then((r) => r.json())) as {
+      familyId: string;
+      families: Array<{ familyId: string; label: string }>;
+    };
+    expect(body.familyId).toBe(familyId); // the first one, when nothing is asked for
+    expect(body.families).toEqual([
+      { familyId, label: 'พ่อ' },
+      { familyId: inLawsId, label: 'ย่า' },
+    ]);
+  });
+
+  it('opens the family the page asks for', async () => {
+    const res = await authed('/me', { headers: { 'x-family-id': inLawsId } });
+    expect(await res.json()).toMatchObject({ familyId: inLawsId, displayName: 'สะใภ้' });
+  });
+
+  it('cannot be pointed at a family this person is not in', async () => {
+    const strangers = await db.prisma.family.create({ data: { lineGroupId: 'G_strangers', timezone: ZONE } });
+    const res = await authed('/me', { headers: { 'x-family-id': strangers.id } });
+    // Falls back to their own first family — never the one they asked for.
+    expect(await res.json()).toMatchObject({ familyId });
   });
 });
 
@@ -505,6 +550,132 @@ describe('GET /agenda + GET /events/:id', () => {
     ).toEqual(['Mon 06:00', 'Mon 06:00']);
   });
 
+  describe('one date of a repeating appointment', () => {
+    type Listed = { items: Array<{ id: string; title: string; startAt: string; repeats: boolean }> };
+    const week = '/events?from=2026-09-07&to=2026-09-27T23:59:59';
+    const onMonday = (d: number, hour = 9) =>
+      DateTime.fromISO(`2026-09-${String(d).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00`, {
+        zone: ZONE,
+      });
+
+    async function weeklyPhysio() {
+      return db.prisma.event.create({
+        data: {
+          familyId,
+          title: 'กายภาพแม่',
+          category: 'MEDICAL',
+          location: 'รพ.ศิริราช',
+          startAt: onMonday(7).toJSDate(),
+          rrule: 'FREQ=WEEKLY;BYDAY=MO',
+          attendees: { create: [{ memberId }] },
+        },
+      });
+    }
+
+    const dates = (body: Listed) =>
+      body.items.map((i) => `${DateTime.fromISO(i.startAt, { zone: ZONE }).toFormat('dd HH:mm')} ${i.title}`);
+
+    it('skips a single week and leaves the rest', async () => {
+      const series = await weeklyPhysio();
+
+      const res = await authed(`/events/${series.id}/skip`, {
+        method: 'POST',
+        body: JSON.stringify({ occurrence: onMonday(14).toISO() }),
+      });
+      expect(res.status).toBe(200);
+
+      const body = (await authed(week).then((r) => r.json())) as Listed;
+      expect(dates(body)).toEqual(['07 09:00 กายภาพแม่', '21 09:00 กายภาพแม่']);
+    });
+
+    it('moves a single week into its own appointment, keeping who and where', async () => {
+      const series = await weeklyPhysio();
+
+      const res = await authed(`/events/${series.id}/detach`, {
+        method: 'POST',
+        body: JSON.stringify({ occurrence: onMonday(14).toISO(), startAt: '2026-09-15T13:00' }),
+      });
+      expect(res.status).toBe(201);
+      const { id } = (await res.json()) as { id: string };
+
+      const body = (await authed(week).then((r) => r.json())) as Listed;
+      expect(dates(body)).toEqual([
+        '07 09:00 กายภาพแม่',
+        '15 13:00 กายภาพแม่',
+        '21 09:00 กายภาพแม่',
+      ]);
+      expect(body.items.find((i) => i.id === id)?.repeats).toBe(false);
+
+      const moved = await db.prisma.event.findUniqueOrThrow({
+        where: { id },
+        include: { attendees: true },
+      });
+      expect(moved.location).toBe('รพ.ศิริราช');
+      expect(moved.attendees.map((a) => a.memberId)).toEqual([memberId]);
+    });
+
+    it('stops reminding for the skipped week only', async () => {
+      // The API generates reminders against the real clock, so this series is
+      // built around today rather than the fixed September dates above.
+      const first = DateTime.now().setZone(ZONE).plus({ days: 8 }).startOf('day').set({ hour: 9 });
+      const created = await authed('/events', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'กายภาพแม่', startAt: first.toISO(), rrule: 'FREQ=WEEKLY' }),
+      });
+      expect(created.status).toBe(201);
+      const series = await db.prisma.event.findFirstOrThrow({ where: { title: 'กายภาพแม่' } });
+
+      // The 2-hour-before reminder is the easiest to pin to one occurrence.
+      const twoHoursBefore = (start: DateTime) => start.minus({ hours: 2 }).toMillis();
+      const pending = async () =>
+        new Set(
+          (
+            await db.prisma.notificationJob.findMany({
+              where: { refId: series.id, status: 'PENDING' },
+              select: { dueAt: true },
+            })
+          ).map((j) => j.dueAt.getTime()),
+        );
+
+      expect((await pending()).has(twoHoursBefore(first))).toBe(true);
+
+      await authed(`/events/${series.id}/skip`, {
+        method: 'POST',
+        body: JSON.stringify({ occurrence: first.toISO() }),
+      });
+
+      const after = await pending();
+      expect(after.has(twoHoursBefore(first))).toBe(false);
+      expect(after.has(twoHoursBefore(first.plus({ weeks: 1 })))).toBe(true);
+    });
+
+    it('refuses a date the series does not actually fall on', async () => {
+      const series = await weeklyPhysio();
+      const res = await authed(`/events/${series.id}/skip`, {
+        method: 'POST',
+        body: JSON.stringify({ occurrence: '2026-09-15T09:00' }), // a Tuesday
+      });
+      expect(res.status).toBe(404);
+      expect((await db.prisma.event.findUniqueOrThrow({ where: { id: series.id } })).exdates).toEqual([]);
+    });
+
+    it('keeps a skipped week skipped when the whole series moves an hour', async () => {
+      const series = await weeklyPhysio();
+      await authed(`/events/${series.id}/skip`, {
+        method: 'POST',
+        body: JSON.stringify({ occurrence: onMonday(14).toISO() }),
+      });
+
+      await authed(`/events/${series.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ startAt: '2026-09-07T10:00' }),
+      });
+
+      const body = (await authed(week).then((r) => r.json())) as Listed;
+      expect(dates(body)).toEqual(['07 10:00 กายภาพแม่', '21 10:00 กายภาพแม่']);
+    });
+  });
+
   it('names the public holidays inside the range', async () => {
     const body = (await authed('/events?from=2026-12-01&to=2026-12-12T23:59:59').then((r) =>
       r.json(),
@@ -718,6 +889,53 @@ describe('creating standing items from the app', () => {
 
     const chore = await db.prisma.chore.findFirstOrThrow();
     expect(chore.rotationMemberIds).toHaveLength(2);
+  });
+
+  it('PATCH /chores/:id changes who is in the rotation, and the first name goes next', async () => {
+    await db.prisma.member.create({ data: { familyId, lineUserId: 'U_dad_r', displayName: 'พ่อ' } });
+    await db.prisma.member.create({
+      data: { familyId, lineUserId: 'U_sis_r', displayName: 'Aon Somchai' },
+    });
+    await authed('/chores', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ล้างจาน', cadence: 'DAILY', rotationNames: ['แม่', 'พ่อ'] }),
+    });
+    const chore = await db.prisma.chore.findFirstOrThrow();
+    // Two turns in: it is พ่อ's go, one lap around.
+    await db.prisma.chore.update({ where: { id: chore.id }, data: { rotationCursor: 3 } });
+
+    type Listed = { items: Array<{ nextAssignee: string | null; rotationNames: string[] }> };
+    const before = (await authed('/chores').then((r) => r.json())) as Listed;
+    // Listed from whoever is up next, which is what the edit form prefills.
+    expect(before.items[0]?.rotationNames).toEqual(['พ่อ', 'แม่']);
+
+    const res = await authed(`/chores/${chore.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rotationNames: ['Aon Somchai', 'แม่', 'พ่อ'] }),
+    });
+    expect(res.status).toBe(200);
+
+    const after = (await authed('/chores').then((r) => r.json())) as Listed;
+    expect(after.items[0]?.nextAssignee).toBe('Aon Somchai');
+    expect(after.items[0]?.rotationNames).toEqual(['Aon Somchai', 'แม่', 'พ่อ']);
+  });
+
+  it('PATCH /chores/:id refuses a name it cannot find instead of dropping someone', async () => {
+    await authed('/chores', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ทิ้งขยะ', cadence: 'WEEKLY', rotationNames: ['แม่'] }),
+    });
+    const chore = await db.prisma.chore.findFirstOrThrow();
+
+    const res = await authed(`/chores/${chore.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rotationNames: ['แม่', 'ลุงไม่มีตัวตน'] }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('ลุงไม่มีตัวตน');
+
+    const unchanged = await db.prisma.chore.findUniqueOrThrow({ where: { id: chore.id } });
+    expect(unchanged.rotationMemberIds).toHaveLength(1);
   });
 
   it('POST /events carries a repeat rule through', async () => {

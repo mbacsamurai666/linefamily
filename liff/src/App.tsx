@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   api,
+  chooseFamily,
   type Asset,
   type AgendaItem,
   type BillItem,
@@ -94,6 +95,24 @@ export default function App() {
       <header className="topbar">
         <div className="avatar">{initial}</div>
         <div className="greeting">บ้านเรา · {me.displayName}</div>
+        {me.families.length > 1 && (
+          <select
+            className="family-switch"
+            aria-label="เลือกครอบครัว"
+            value={me.familyId}
+            onChange={(e) => {
+              chooseFamily(e.target.value);
+              // Every tab holds data from the old family; start clean.
+              window.location.reload();
+            }}
+          >
+            {me.families.map((f) => (
+              <option key={f.familyId} value={f.familyId}>
+                บ้าน {f.label}
+              </option>
+            ))}
+          </select>
+        )}
       </header>
 
       <main className="content">
@@ -144,6 +163,17 @@ export default function App() {
 }
 
 /**
+ * The server's own sentence out of an API error, when it sent one.
+ * request() reports `400 Bad Request: "ไม่พบชื่อในบ้าน: ..."`, and only the
+ * part in quotes means anything to the person holding the phone.
+ */
+function readableError(err: unknown): string {
+  const message = (err as Error).message ?? String(err);
+  const quoted = message.match(/^\d{3}[^:]*: "(.+)"$/);
+  return quoted ? (quoted[1] as string) : message;
+}
+
+/**
  * Edit / delete buttons for one row. Deleting asks first, inline — a mis-tap
  * on a list of small rows is easy, and nothing here can be undone from the app.
  */
@@ -151,10 +181,16 @@ function RowActions({
   onEdit,
   onDelete,
   extra,
+  editLabel = 'แก้ไข',
+  deleteLabel = 'ลบ',
+  confirmText = 'ลบรายการนี้?',
 }: {
   onEdit?: () => void;
   onDelete: () => void | Promise<void>;
   extra?: { label: string; onClick: () => void | Promise<void> };
+  editLabel?: string;
+  deleteLabel?: string;
+  confirmText?: string;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -162,7 +198,7 @@ function RowActions({
   if (confirming) {
     return (
       <div className="row-actions">
-        <span className="muted">ลบรายการนี้?</span>
+        <span className="muted">{confirmText}</span>
         <button
           type="button"
           className="row-btn row-btn-danger"
@@ -195,11 +231,11 @@ function RowActions({
       )}
       {onEdit && (
         <button type="button" className="row-btn" onClick={onEdit}>
-          แก้ไข
+          {editLabel}
         </button>
       )}
       <button type="button" className="row-btn" onClick={() => setConfirming(true)}>
-        ลบ
+        {deleteLabel}
       </button>
     </div>
   );
@@ -676,7 +712,11 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, EventDetail>>({});
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [editingEvent, setEditingEvent] = useState<{ id: string; detail: EventDetail } | null>(null);
+  const [editingEvent, setEditingEvent] = useState<{
+    id: string;
+    detail: EventDetail;
+    occurrence?: string;
+  } | null>(null);
 
   const monthKey = selected.slice(0, 7);
 
@@ -850,10 +890,32 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                       ) : (
                         <>
                           <EventDetailRows detail={detail} />
-                          {detail.rrule && (
-                            <div className="muted">แก้ไขหรือลบจะมีผลกับทุกครั้งที่นัดนี้เกิดซ้ำ</div>
+                          {ev.repeats && (
+                            <>
+                              <div className="occ-label">
+                                เฉพาะ {thaiShortDayMonth(dayKey(ev.startAt, timezone))}
+                              </div>
+                              <RowActions
+                                editLabel="เลื่อน/แก้ครั้งนี้"
+                                deleteLabel="ข้ามครั้งนี้"
+                                confirmText="ข้ามนัดครั้งนี้?"
+                                onEdit={() => {
+                                  setEditingEvent({ id: ev.id, detail, occurrence: ev.startAt });
+                                  setShowAddEvent(false);
+                                }}
+                                onDelete={async () => {
+                                  await api.skipOccurrence(ev.id, ev.startAt);
+                                  setExpandedKey(null);
+                                  await reload();
+                                }}
+                              />
+                              <div className="occ-label">ทุกครั้ง</div>
+                            </>
                           )}
                           <RowActions
+                            editLabel={ev.repeats ? 'แก้ทั้งชุด' : 'แก้ไข'}
+                            deleteLabel={ev.repeats ? 'ลบทั้งชุด' : 'ลบ'}
+                            confirmText={ev.repeats ? 'ลบนัดนี้ทุกครั้ง?' : 'ลบรายการนี้?'}
                             onEdit={() => {
                               setEditingEvent({ id: ev.id, detail });
                               setShowAddEvent(false);
@@ -1135,17 +1197,26 @@ interface AddEventFormProps {
   selectedDay: string;
   onAdded: () => void;
   onCancel: () => void;
-  /** Set when correcting an existing appointment rather than adding one. */
-  editing?: { id: string; detail: EventDetail };
+  /**
+   * Set when correcting an existing appointment rather than adding one. With
+   * `occurrence` (that date's start), only that one date of a repeating
+   * appointment is changed; without it, the whole appointment is.
+   */
+  editing?: { id: string; detail: EventDetail; occurrence?: string };
   timezone: string;
 }
 
 function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: AddEventFormProps) {
   const existing = editing?.detail;
+  const occurrence = editing?.occurrence;
+  // What the form starts from: the one date being changed, or the appointment itself.
+  const shownStart = occurrence ?? existing?.startAt;
+
   const [title, setTitle] = useState(existing?.title ?? '');
   const [allDay, setAllDay] = useState(existing?.allDay ?? false);
+  const [day, setDay] = useState(shownStart ? dayKey(shownStart, timezone) : selectedDay);
   const [time, setTime] = useState(
-    existing && !existing.allDay ? clockHHmm(existing.startAt, timezone) : '09:00',
+    shownStart && !existing?.allDay ? clockHHmm(shownStart, timezone) : '09:00',
   );
   const [category, setCategory] = useState<(typeof EVENT_CATEGORIES)[number]>(
     (existing?.category as (typeof EVENT_CATEGORIES)[number]) ?? 'OTHER',
@@ -1157,17 +1228,23 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // An edit keeps the appointment on its own day, not on whichever day the
-  // grid happens to have selected.
-  const day = existing ? dayKey(existing.startAt, timezone) : selectedDay;
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !day) return;
 
     setSaving(true);
     try {
-      if (editing) {
+      if (editing && occurrence) {
+        await api.detachOccurrence(editing.id, occurrence, {
+          title: title.trim(),
+          startAt: allDay ? day : `${day}T${time}`,
+          allDay,
+          category,
+          location: location.trim() || null,
+          attendeeName: attendeeName.trim() || null,
+          note: note.trim() || null,
+        });
+      } else if (editing) {
         // null rather than omitted: an emptied field means "clear it".
         await api.updateEvent(editing.id, {
           title: title.trim(),
@@ -1215,18 +1292,37 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
         />
       </div>
 
+      {occurrence && (
+        <div className="muted">
+          แก้เฉพาะวันที่ {thaiShortDayMonth(dayKey(occurrence, timezone))} — ครั้งอื่นยังเหมือนเดิม
+        </div>
+      )}
+
       <label className="checkbox-field">
         <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
         ทั้งวัน ไม่ระบุเวลา
       </label>
 
       <div className="field-row">
+        <div className="field">
+          <label htmlFor="event-day">วันที่</label>
+          <input
+            id="event-day"
+            type="date"
+            value={day}
+            onChange={(e) => setDay(e.target.value)}
+            required
+          />
+        </div>
         {!allDay && (
           <div className="field">
             <label htmlFor="event-time">เวลา</label>
             <input id="event-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
           </div>
         )}
+      </div>
+
+      <div className="field-row">
         <div className="field">
           <label htmlFor="event-category">ประเภท</label>
           <select
@@ -1241,22 +1337,25 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
             ))}
           </select>
         </div>
-      </div>
 
-      <div className="field">
-        <label htmlFor="event-repeat">ทำซ้ำ</label>
-        <select id="event-repeat" value={rrule} onChange={(e) => setRrule(e.target.value)}>
-          {REPEAT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-          {/* A rule typed in chat ("ทุกวันจันทร์") has no entry above — keep it
-              selectable so editing does not silently drop it. */}
-          {rrule && !REPEAT_OPTIONS.some((o) => o.value === rrule) && (
-            <option value={rrule}>{repeatLabel(rrule)}</option>
-          )}
-        </select>
+        {/* A single date pulled out of a series is a one-off by definition. */}
+        {!occurrence && (
+          <div className="field">
+            <label htmlFor="event-repeat">ทำซ้ำ</label>
+            <select id="event-repeat" value={rrule} onChange={(e) => setRrule(e.target.value)}>
+              {REPEAT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+              {/* A rule typed in chat ("ทุกวันจันทร์") has no entry above — keep it
+                  selectable so editing does not silently drop it. */}
+              {rrule && !REPEAT_OPTIONS.some((o) => o.value === rrule) && (
+                <option value={rrule}>{repeatLabel(rrule)}</option>
+              )}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="field">
@@ -1297,7 +1396,13 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           ยกเลิก
         </button>
         <button type="submit" className="form-submit" disabled={saving}>
-          {saving ? 'กำลังบันทึก...' : editing ? 'บันทึกการแก้ไข' : 'บันทึกนัดหมาย'}
+          {saving
+            ? 'กำลังบันทึก...'
+            : occurrence
+              ? 'บันทึกเฉพาะครั้งนี้'
+              : editing
+                ? 'บันทึกการแก้ไข'
+                : 'บันทึกนัดหมาย'}
         </button>
       </div>
     </form>
@@ -2773,6 +2878,7 @@ function ChoresSection() {
   const [rotation, setRotation] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const load = () => api.chores().then((r) => setChores(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
@@ -2785,12 +2891,16 @@ function ChoresSection() {
     setName('');
     setCadence('WEEKLY');
     setRotation('');
+    setFormError(null);
   };
 
   const startEdit = (chore: ChoreItem) => {
     setEditingId(chore.id);
     setName(chore.name);
     setCadence(chore.cadence);
+    // Comma-separated: LINE display names often contain spaces.
+    setRotation(chore.rotationNames.join(', '));
+    setFormError(null);
     setShowAdd(true);
   };
 
@@ -2798,25 +2908,29 @@ function ChoresSection() {
     e.preventDefault();
     if (!name.trim()) return;
 
+    // Commas when there are any — "Aon Somchai, แม่" is two people, not three.
+    // Plain spaces still work for the short household names typed by hand.
     const rotationNames = rotation
-      .split(/[,\s]+/)
+      .split(rotation.includes(',') ? ',' : /\s+/)
       .map((n) => n.trim())
       .filter(Boolean);
 
     setSaving(true);
+    setFormError(null);
     try {
       if (editingId) {
-        // The rotation is fixed when the chore is created — editing covers the
-        // parts that actually drift: what it is called and how often it comes
-        // round. Changing who is in the rotation means making a new chore.
-        await api.updateChore(editingId, { name: name.trim(), cadence });
+        // The first name is whoever goes next — the form was filled in that
+        // order, so saving it untouched keeps the turn where it was.
+        await api.updateChore(editingId, { name: name.trim(), cadence, rotationNames });
       } else {
         await api.addChore({ name: name.trim(), cadence, rotationNames });
       }
       closeForm();
       await load();
     } catch (err) {
-      setError((err as Error).message);
+      // Stay in the form: a misspelt name is fixed by retyping it, not by
+      // reloading the page.
+      setFormError(readableError(err));
     } finally {
       setSaving(false);
     }
@@ -2903,14 +3017,14 @@ function ChoresSection() {
               <input
                 id="chore-rotation"
                 type="text"
-                placeholder="แม่ พ่อ พี่เอ"
+                placeholder="แม่, พ่อ, พี่เอ"
                 value={rotation}
                 onChange={(e) => setRotation(e.target.value)}
-                disabled={editingId !== null}
               />
             </div>
           </div>
-          {editingId && <div className="muted">ลำดับเวรแก้ไม่ได้ — ถ้าจะเปลี่ยนคน ให้ตั้งเวรใหม่</div>}
+          {editingId && <div className="muted">ชื่อแรกคือคนที่ถึงตาถัดไป</div>}
+          {formError && <p className="error">{formError}</p>}
           <div className="field-row">
             <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก

@@ -7,8 +7,8 @@ import { DateTime } from 'luxon';
  * This is a net position, not a pairwise ledger: if A fronts money split with
  * B, and separately B fronts money split with A, the two debts net against
  * each other into a single number per person rather than "A owes B ¥X and B
- * owes A ¥Y". That is enough to answer "who's ahead, who's behind" without
- * the complexity of a full settle-up matrix, which nobody asked for.
+ * owes A ¥Y". settleUp() below then turns those net positions into the
+ * transfers that clear them, which is the question that follows.
  */
 
 export interface MemberBalance {
@@ -16,6 +16,51 @@ export interface MemberBalance {
   displayName: string;
   /** Positive: owed money by the rest of the family. Negative: owes them. */
   balanceSatang: number;
+}
+
+export interface Transfer {
+  from: string;
+  to: string;
+  amountSatang: number;
+}
+
+/**
+ * "Who pays whom" to bring every balance to zero.
+ *
+ * The question people actually ask after a net balance is not the history of
+ * who fronted what, it is "so who do I transfer to?". Matching the largest
+ * debtor against the largest creditor, repeatedly, settles everyone in at most
+ * one transfer fewer than the number of people involved — never a chain of
+ * A→B→C where A→C would do.
+ *
+ * Balances must sum to zero, which computeNetBalances guarantees since every
+ * split is credited to one member and debited from another.
+ */
+export function settleUp(balances: MemberBalance[]): Transfer[] {
+  const creditors = balances
+    .filter((b) => b.balanceSatang > 0)
+    .map((b) => ({ name: b.displayName, left: b.balanceSatang }))
+    .sort((a, b) => b.left - a.left);
+  const debtors = balances
+    .filter((b) => b.balanceSatang < 0)
+    .map((b) => ({ name: b.displayName, left: -b.balanceSatang }))
+    .sort((a, b) => b.left - a.left);
+
+  const transfers: Transfer[] = [];
+  let c = 0;
+  let d = 0;
+  while (c < creditors.length && d < debtors.length) {
+    const creditor = creditors[c]!;
+    const debtor = debtors[d]!;
+    const amount = Math.min(creditor.left, debtor.left);
+
+    transfers.push({ from: debtor.name, to: creditor.name, amountSatang: amount });
+    creditor.left -= amount;
+    debtor.left -= amount;
+    if (creditor.left === 0) c++;
+    if (debtor.left === 0) d++;
+  }
+  return transfers;
 }
 
 export async function computeNetBalances(

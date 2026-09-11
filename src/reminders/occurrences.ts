@@ -15,6 +15,10 @@ const { rrulestr } = rrulePkg;
  * way round this is floating time: hand it the family's wall-clock time dressed
  * up as UTC, expand, then read each result back as wall time in the real zone.
  *
+ * `exdates` are occurrences that no longer happen at this slot — skipped, or
+ * moved out into their own one-off. They are dropped before `max` is applied,
+ * so skipping one week still schedules the next four.
+ *
  * Throws on a malformed rule; callers decide what a broken rule should mean.
  */
 export function expandOccurrences(
@@ -24,15 +28,18 @@ export function expandOccurrences(
   from: DateTime,
   to: DateTime,
   max: number,
+  exdates: Date[] = [],
 ): DateTime[] {
   const rule = rrulestr(`RRULE:${rrule}`, {
     dtstart: floating(DateTime.fromJSDate(startAt, { zone })),
   });
+  const skipped = new Set(exdates.map((d) => d.getTime()));
 
   return rule
     .between(floating(from.setZone(zone)), floating(to.setZone(zone)), true)
-    .slice(0, max)
-    .map((d) => unfloat(d, zone));
+    .map((d) => unfloat(d, zone))
+    .filter((dt) => !skipped.has(dt.toMillis()))
+    .slice(0, max);
 }
 
 function floating(dt: DateTime): Date {

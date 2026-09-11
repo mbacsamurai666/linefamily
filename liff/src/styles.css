@@ -113,6 +113,24 @@ select {
   font-size: 14px;
 }
 
+/* Only rendered for someone in more than one family group. */
+.family-switch {
+  margin-left: auto;
+  max-width: 45%;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.16);
+  color: white;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+}
+
+.family-switch option {
+  color: var(--text);
+}
+
 .greeting-sub {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.85);
@@ -765,6 +783,16 @@ select {
 
 .room-calendar {
   position: relative;
+}
+
+/* "เฉพาะ 14 ก.ย." / "ทุกครั้ง" — which of the two action rows below a
+   repeating appointment acts on. */
+.occ-label {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
 }
 
 .cal-detail-holiday {

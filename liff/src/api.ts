@@ -1,5 +1,31 @@
 import { getIdToken } from './liff.js';
 
+const FAMILY_KEY = 'familyId';
+
+/**
+ * Which family this phone last chose, for someone in more than one family
+ * group. A per-device convenience, so localStorage — and it may be missing or
+ * throw (private mode, blocked storage), which just means "the first family".
+ */
+export function chosenFamily(): string | null {
+  try {
+    return localStorage.getItem(FAMILY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function chooseFamily(familyId: string): void {
+  try {
+    localStorage.setItem(FAMILY_KEY, familyId);
+  } catch {
+    // Nowhere to remember it; the switch still applies until the page reloads.
+  }
+  sessionFamily = familyId;
+}
+
+let sessionFamily: string | null = chosenFamily();
+
 /** Every request re-fetches the ID token; the SDK caches it, so this is cheap. */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const idToken = await getIdToken();
@@ -8,6 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'x-liff-id-token': idToken,
+      ...(sessionFamily ? { 'x-family-id': sessionFamily } : {}),
       ...(init?.body ? { 'content-type': 'application/json' } : {}),
       ...init?.headers,
     },
@@ -27,6 +54,8 @@ export interface Me {
   displayName: string;
   familyId: string;
   timezone: string;
+  /** Empty unless this LINE account is in more than one family group. */
+  families: Array<{ familyId: string; label: string }>;
 }
 
 export interface AgendaItem {
@@ -176,6 +205,8 @@ export interface ChoreItem {
   active: boolean;
   nextDueAt: string;
   nextAssignee: string | null;
+  /** In turn order, starting from whoever is up next. */
+  rotationNames: string[];
 }
 
 export interface Asset {
@@ -264,6 +295,27 @@ export const api = {
     },
   ) => request(`/events/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteEvent: (id: string) => request(`/events/${id}`, { method: 'DELETE' }),
+  /** One date of a repeating appointment stops happening. */
+  skipOccurrence: (id: string, occurrence: string) =>
+    request(`/events/${id}/skip`, { method: 'POST', body: JSON.stringify({ occurrence }) }),
+  /** One date of a repeating appointment becomes its own, editable one-off. */
+  detachOccurrence: (
+    id: string,
+    occurrence: string,
+    body: {
+      title?: string;
+      startAt?: string;
+      allDay?: boolean;
+      category?: string;
+      location?: string | null;
+      note?: string | null;
+      attendeeName?: string | null;
+    },
+  ) =>
+    request<{ id: string }>(`/events/${id}/detach`, {
+      method: 'POST',
+      body: JSON.stringify({ occurrence, ...body }),
+    }),
 
   transactions: (month?: string) =>
     request<{ items: TransactionItem[] }>(`/transactions${month ? `?month=${month}` : ''}`),
@@ -307,7 +359,10 @@ export const api = {
   chores: () => request<{ items: ChoreItem[] }>('/chores'),
   addChore: (body: { name: string; cadence: string; rotationNames?: string[] }) =>
     request('/chores', { method: 'POST', body: JSON.stringify(body) }),
-  updateChore: (id: string, body: { name?: string; cadence?: string; active?: boolean }) =>
+  updateChore: (
+    id: string,
+    body: { name?: string; cadence?: string; active?: boolean; rotationNames?: string[] },
+  ) =>
     request(`/chores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteChore: (id: string) => request(`/chores/${id}`, { method: 'DELETE' }),
 

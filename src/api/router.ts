@@ -11,7 +11,7 @@ import {
   listDeposits,
   listLoans,
 } from '../modules/loanAssetDeposit.js';
-import { persistDraft } from '../modules/persist.js';
+import { persistDraft, resolveRotation } from '../modules/persist.js';
 import {
   deleteAsset,
   deleteBill,
@@ -24,6 +24,8 @@ import {
   deleteShoppingItem,
   deleteTask,
   deleteTransaction,
+  detachOccurrence,
+  skipOccurrence,
   updateAsset,
   updateBill,
   updateChore,
@@ -61,13 +63,27 @@ interface AuthedMember {
   memberId: string;
   displayName: string;
   timezone: string;
+  lineUserId: string;
+  /** How many families this LINE account belongs to — more than 1 shows a switcher. */
+  familyCount: number;
 }
 
 type Vars = { member: AuthedMember };
 
+/**
+ * The member behind a verified LIFF token, in the family the app asked for.
+ *
+ * One LINE account is a separate Member row in every group the bot shares with
+ * it. LINE no longer tells a LIFF page which group opened it, so the page says
+ * which family it wants (x-family-id, remembered on the phone) and gets its
+ * first family otherwise. The requested id is only honoured if this person
+ * really is a member there — it picks between their own families, it can never
+ * reach someone else's.
+ */
 async function resolveMember(
   deps: ApiDeps,
   idToken: string,
+  requestedFamilyId: string | undefined,
 ): Promise<AuthedMember | null> {
   const verified = await deps.verifyToken(idToken);
   if (!verified) {
@@ -75,10 +91,13 @@ async function resolveMember(
     return null;
   }
 
-  const member = await deps.prisma.member.findFirst({
+  const memberships = await deps.prisma.member.findMany({
     where: { lineUserId: verified.lineUserId },
     select: { id: true, displayName: true, family: { select: { id: true, timezone: true } } },
+    orderBy: { createdAt: 'asc' },
   });
+  const member =
+    memberships.find((m) => m.family.id === requestedFamilyId) ?? memberships[0];
   if (!member) {
     deps.log?.('liff auth failed: no Member row for this LINE user id', {
       lineUserId: verified.lineUserId,
@@ -91,6 +110,8 @@ async function resolveMember(
     memberId: member.id,
     displayName: member.displayName,
     timezone: member.family.timezone,
+    lineUserId: verified.lineUserId,
+    familyCount: memberships.length,
   };
 }
 
@@ -231,6 +252,7 @@ const chorePatchBody = z.object({
   name: z.string().min(1).optional(),
   cadence: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']).optional(),
   active: z.boolean().optional(),
+  rotationNames: z.array(z.string().min(1)).optional(),
 });
 
 const loanPatchBody = z.object({
@@ -292,16 +314,44 @@ export function createApiRouter(deps: ApiDeps) {
     const idToken = c.req.header('x-liff-id-token');
     if (!idToken) return c.json({ error: 'missing x-liff-id-token header' }, 401);
 
-    const member = await resolveMember(deps, idToken);
+    const member = await resolveMember(deps, idToken, c.req.header('x-family-id'));
     if (!member) return c.json({ error: 'unauthorized' }, 401);
 
     c.set('member', member);
     await next();
   });
 
-  app.get('/me', (c) => {
-    const member = c.get('member');
-    return c.json(member);
+  app.get('/me', async (c) => {
+    const { lineUserId, familyCount, ...member } = c.get('member');
+    if (familyCount < 2) return c.json({ ...member, families: [] });
+
+    // Families have no names of their own, so each is labelled by who else is
+    // in it — "แม่, พ่อ, น้องพร" is how anyone would tell two groups apart.
+    const memberships = await deps.prisma.member.findMany({
+      where: { lineUserId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        family: {
+          select: {
+            id: true,
+            members: {
+              where: { lineUserId: { not: lineUserId } },
+              select: { displayName: true },
+              orderBy: { createdAt: 'asc' },
+              take: 3,
+            },
+          },
+        },
+      },
+    });
+
+    return c.json({
+      ...member,
+      families: memberships.map((m) => ({
+        familyId: m.family.id,
+        label: m.family.members.map((o) => o.displayName).join(', ') || 'กลุ่มที่มีแค่คุณ',
+      })),
+    });
   });
 
   app.get('/agenda', async (c) => {
@@ -671,6 +721,44 @@ export function createApiRouter(deps: ApiDeps) {
     return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
   });
 
+  /** One date of a repeating appointment: `occurrence` is its start, as the board listed it. */
+  const occurrenceBody = z.object({ occurrence: z.string() });
+
+  app.post('/events/:id/skip', async (c) => {
+    const member = c.get('member');
+    const parsed = occurrenceBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const occurrence = DateTime.fromISO(parsed.data.occurrence, { zone: member.timezone });
+    if (!occurrence.isValid) return c.json({ error: 'invalid occurrence' }, 400);
+
+    const ok = await skipOccurrence(recordCtx(member), c.req.param('id'), occurrence);
+    return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
+  });
+
+  app.post('/events/:id/detach', async (c) => {
+    const member = c.get('member');
+    const parsed = eventPatchBody
+      .extend({ occurrence: z.string() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const { occurrence: occurrenceIso, startAt, ...rest } = parsed.data;
+    const occurrence = DateTime.fromISO(occurrenceIso, { zone: member.timezone });
+    if (!occurrence.isValid) return c.json({ error: 'invalid occurrence' }, 400);
+    let startAtDt: DateTime | undefined;
+    if (startAt !== undefined) {
+      startAtDt = DateTime.fromISO(startAt, { zone: member.timezone });
+      if (!startAtDt.isValid) return c.json({ error: 'invalid startAt' }, 400);
+    }
+
+    const newId = await detachOccurrence(recordCtx(member), c.req.param('id'), occurrence, {
+      ...definedOnly(rest),
+      ...(startAtDt !== undefined ? { startAt: startAtDt } : {}),
+    });
+    return newId ? c.json({ ok: true, id: newId }, 201) : c.json({ error: 'not found' }, 404);
+  });
+
   app.delete('/events/:id', async (c) => {
     const ok = await deleteEvent(recordCtx(c.get('member')), c.req.param('id'));
     return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
@@ -935,6 +1023,13 @@ export function createApiRouter(deps: ApiDeps) {
                 ch.rotationMemberIds[ch.rotationCursor % ch.rotationMemberIds.length] as string,
               ) ?? null)
             : null,
+        // Listed from whoever is up next, so the edit form can show the
+        // rotation the way the family thinks about it — and saving it
+        // unchanged keeps the turn where it is.
+        rotationNames: ch.rotationMemberIds.map(
+          (_, i, ids) =>
+            memberNames.get(ids[(ch.rotationCursor + i) % ids.length] as string) ?? '?',
+        ),
       })),
     });
   });
@@ -959,14 +1054,26 @@ export function createApiRouter(deps: ApiDeps) {
   });
 
   app.patch('/chores/:id', async (c) => {
+    const member = c.get('member');
     const parsed = chorePatchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-    const ok = await updateChore(
-      recordCtx(c.get('member')),
-      c.req.param('id'),
-      definedOnly(parsed.data),
-    );
+    const { rotationNames, ...rest } = parsed.data;
+    let rotationMemberIds: string[] | undefined;
+    if (rotationNames !== undefined) {
+      const resolved = await resolveRotation(deps.prisma, member.familyId, rotationNames);
+      // Refuse rather than drop: a silently shortened rotation would quietly
+      // take someone's turn away.
+      if (resolved.unresolved.length > 0) {
+        return c.json({ error: `ไม่พบชื่อในบ้าน: ${resolved.unresolved.join(', ')}` }, 400);
+      }
+      rotationMemberIds = resolved.memberIds;
+    }
+
+    const ok = await updateChore(recordCtx(member), c.req.param('id'), {
+      ...definedOnly(rest),
+      ...(rotationMemberIds !== undefined ? { rotationMemberIds } : {}),
+    });
     return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
   });
 

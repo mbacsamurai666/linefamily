@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Event" ADD COLUMN     "exdates" TIMESTAMP(3)[] DEFAULT ARRAY[]::TIMESTAMP(3)[];

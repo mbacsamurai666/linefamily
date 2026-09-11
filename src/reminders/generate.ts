@@ -105,7 +105,7 @@ export async function generateEventJobs(
 
   const jobs: Array<{ familyId: string; dueAt: Date; text: string }> = [];
 
-  for (const startAt of eventOccurrences(event.startAt, event.rrule, zone, now)) {
+  for (const startAt of eventOccurrences(event.startAt, event.rrule, zone, now, event.exdates)) {
     for (const dueAt of futureOnly(
       event.reminderOffsets.map((min) => startAt.minus({ minutes: min })),
       now,
@@ -145,6 +145,7 @@ function eventOccurrences(
   rrule: string | null,
   zone: string,
   now: DateTime,
+  exdates: Date[],
 ): DateTime[] {
   if (!rrule) return [DateTime.fromJSDate(startAt, { zone })];
 
@@ -156,6 +157,7 @@ function eventOccurrences(
       now,
       now.plus({ days: REPEAT_WINDOW_DAYS }),
       REPEAT_MAX_OCCURRENCES,
+      exdates,
     );
   } catch {
     // A malformed rule must not take the appointment down with it.
