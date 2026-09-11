@@ -1,5 +1,22 @@
 import { z } from 'zod';
 
+/**
+ * Reads .env into process.env, once, for anything that calls loadConfig.
+ *
+ * Node only does this by itself with --env-file, which means a script run
+ * straight from the shell (`npm run richmenu:install`) comes up with nothing
+ * configured and fails on required variables. In production there is no .env
+ * at all and the platform supplies the variables, which is why a missing file
+ * is not an error. Real environment variables always win.
+ */
+function loadDotEnvOnce(): void {
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // No .env (container, CI) — the platform's own variables are already set.
+  }
+}
+
 const bool = z
   .string()
   .default('false')
@@ -48,6 +65,8 @@ export type Config = z.infer<typeof schema> & {
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  if (env === process.env) loadDotEnvOnce();
+
   const parsed = schema.safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues

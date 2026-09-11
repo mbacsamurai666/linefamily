@@ -19,8 +19,15 @@ function buildCells(liffUrl: string | undefined): Cell[] {
     ? { type: 'uri', label: 'เปิดแอป', uri: liffUrl }
     : { type: 'message', label: 'ช่วย', text: 'ช่วย' };
 
+  // Six slots for more than six features, so the menu carries what is either
+  // used daily or hard to remember how to type. "ช่วย" is neither — it is one
+  // word, and the bot answers it — so the board takes that slot instead.
   return [
-    { label: 'ช่วยเหลือ', sublabel: 'วิธีใช้', action: { type: 'message', label: 'ช่วย', text: 'ช่วย' } },
+    {
+      label: 'บอร์ดงาน',
+      sublabel: 'งานที่ค้างอยู่',
+      action: { type: 'message', label: 'บอร์ดงาน', text: 'บอร์ดงาน' },
+    },
     {
       label: 'ฉุกเฉิน',
       sublabel: 'กรุ๊ปเลือด/แพ้ยา',
@@ -34,7 +41,7 @@ function buildCells(liffUrl: string | undefined): Cell[] {
     { label: 'ทำแล้ว', sublabel: 'เวรวันนี้', action: { type: 'message', label: 'ทำแล้ว', text: 'ทำแล้ว' } },
     {
       label: liffUrl ? 'เปิดแอป' : 'ช่วย',
-      ...(liffUrl ? { sublabel: 'ปฏิทิน/ค่าใช้จ่าย' } : {}),
+      ...(liffUrl ? { sublabel: 'ปฏิทิน/งาน/เงิน' } : {}),
       action: openApp,
     },
     {
