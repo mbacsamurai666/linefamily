@@ -681,6 +681,55 @@ function EventDetailRows({ detail }: { detail: EventDetail }) {
   );
 }
 
+/**
+ * The action rows under an appointment's details. A repeating one gets two:
+ * "เฉพาะ 14 ก.ย." for that date alone, and "ทุกครั้ง" for the whole series —
+ * so nobody deletes every Monday's physio while meaning to skip one.
+ */
+function EventActions({
+  ev,
+  timezone,
+  onEdit,
+  onChanged,
+}: {
+  ev: EventSummary;
+  timezone: string;
+  /** Called with the occurrence's start to change that date only. */
+  onEdit: (occurrence?: string) => void;
+  onChanged: () => void | Promise<void>;
+}) {
+  return (
+    <>
+      {ev.repeats && (
+        <>
+          <div className="occ-label">เฉพาะ {thaiShortDayMonth(dayKey(ev.startAt, timezone))}</div>
+          <RowActions
+            editLabel="เลื่อน/แก้ครั้งนี้"
+            deleteLabel="ข้ามครั้งนี้"
+            confirmText="ข้ามนัดครั้งนี้?"
+            onEdit={() => onEdit(ev.startAt)}
+            onDelete={async () => {
+              await api.skipOccurrence(ev.id, ev.startAt);
+              await onChanged();
+            }}
+          />
+          <div className="occ-label">ทุกครั้ง</div>
+        </>
+      )}
+      <RowActions
+        editLabel={ev.repeats ? 'แก้ทั้งชุด' : 'แก้ไข'}
+        deleteLabel={ev.repeats ? 'ลบทั้งชุด' : 'ลบ'}
+        confirmText={ev.repeats ? 'ลบนัดนี้ทุกครั้ง?' : 'ลบรายการนี้?'}
+        onEdit={() => onEdit()}
+        onDelete={async () => {
+          await api.deleteEvent(ev.id);
+          await onChanged();
+        }}
+      />
+    </>
+  );
+}
+
 /** "YYYY-MM" -> the ISO bounds of that whole month, for GET /events. */
 function monthRange(monthKey: string): [string, string] {
   const [y, m] = monthKey.split('-').map(Number) as [number, number];
@@ -890,38 +939,18 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                       ) : (
                         <>
                           <EventDetailRows detail={detail} />
-                          {ev.repeats && (
-                            <>
-                              <div className="occ-label">
-                                เฉพาะ {thaiShortDayMonth(dayKey(ev.startAt, timezone))}
-                              </div>
-                              <RowActions
-                                editLabel="เลื่อน/แก้ครั้งนี้"
-                                deleteLabel="ข้ามครั้งนี้"
-                                confirmText="ข้ามนัดครั้งนี้?"
-                                onEdit={() => {
-                                  setEditingEvent({ id: ev.id, detail, occurrence: ev.startAt });
-                                  setShowAddEvent(false);
-                                }}
-                                onDelete={async () => {
-                                  await api.skipOccurrence(ev.id, ev.startAt);
-                                  setExpandedKey(null);
-                                  await reload();
-                                }}
-                              />
-                              <div className="occ-label">ทุกครั้ง</div>
-                            </>
-                          )}
-                          <RowActions
-                            editLabel={ev.repeats ? 'แก้ทั้งชุด' : 'แก้ไข'}
-                            deleteLabel={ev.repeats ? 'ลบทั้งชุด' : 'ลบ'}
-                            confirmText={ev.repeats ? 'ลบนัดนี้ทุกครั้ง?' : 'ลบรายการนี้?'}
-                            onEdit={() => {
-                              setEditingEvent({ id: ev.id, detail });
+                          <EventActions
+                            ev={ev}
+                            timezone={timezone}
+                            onEdit={(occurrence) => {
+                              setEditingEvent({
+                                id: ev.id,
+                                detail,
+                                ...(occurrence ? { occurrence } : {}),
+                              });
                               setShowAddEvent(false);
                             }}
-                            onDelete={async () => {
-                              await api.deleteEvent(ev.id);
+                            onChanged={async () => {
                               forget(ev.id);
                               setExpandedKey(null);
                               await reload();
@@ -981,7 +1010,8 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
   const [selectedEvent, setSelectedEvent] = useState<EventSummary | null>(null);
   const [detail, setDetail] = useState<EventDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
+  // null: not editing. {}: the whole appointment. { occurrence }: that date only.
+  const [editing, setEditing] = useState<{ occurrence?: string } | null>(null);
 
   const load = () =>
     api
@@ -992,9 +1022,14 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
   useEffect(() => {
     setSelectedEvent(null);
     setDetail(null);
-    setEditing(false);
+    setEditing(null);
     load();
   }, [weekStartKey, weekEndKey]);
+
+  // Every week of a repeating appointment shares its id, so a block is
+  // identified by id and start together.
+  const isChosenEvent = (ev: EventSummary) =>
+    selectedEvent?.id === ev.id && selectedEvent.startAt === ev.startAt;
 
   const byDay = useMemo(() => {
     const map = new Map<string, EventSummary[]>();
@@ -1008,7 +1043,8 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
   }, [events, timezone]);
 
   const selectEvent = async (ev: EventSummary) => {
-    if (selectedEvent?.id === ev.id) {
+    setEditing(null);
+    if (isChosenEvent(ev)) {
       setSelectedEvent(null);
       setDetail(null);
       return;
@@ -1134,7 +1170,7 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
                         <button
                           key={ev.id}
                           type="button"
-                          className={`week-event${selectedEvent?.id === ev.id ? ' week-event-selected' : ''}`}
+                          className={`week-event${isChosenEvent(ev) ? ' week-event-selected' : ''}`}
                           style={{ top, height, background: eventCategoryColor(ev.category) }}
                           onClick={() => selectEvent(ev)}
                         >
@@ -1162,22 +1198,27 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
               <EventDetailRows detail={detail} />
               {editing ? (
                 <AddEventForm
-                  selectedDay={dayKey(detail.startAt, timezone)}
+                  selectedDay={dayKey(selectedEvent.startAt, timezone)}
                   timezone={timezone}
-                  editing={{ id: detail.id, detail }}
-                  onCancel={() => setEditing(false)}
+                  editing={{
+                    id: detail.id,
+                    detail,
+                    ...(editing.occurrence ? { occurrence: editing.occurrence } : {}),
+                  }}
+                  onCancel={() => setEditing(null)}
                   onAdded={async () => {
-                    setEditing(false);
+                    setEditing(null);
                     setSelectedEvent(null);
                     setDetail(null);
                     await load();
                   }}
                 />
               ) : (
-                <RowActions
-                  onEdit={() => setEditing(true)}
-                  onDelete={async () => {
-                    await api.deleteEvent(detail.id);
+                <EventActions
+                  ev={selectedEvent}
+                  timezone={timezone}
+                  onEdit={(occurrence) => setEditing(occurrence ? { occurrence } : {})}
+                  onChanged={async () => {
                     setSelectedEvent(null);
                     setDetail(null);
                     await load();

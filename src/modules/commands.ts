@@ -25,6 +25,7 @@ import {
   deleteShoppingItem,
   deleteTask,
   deleteTransaction,
+  skipOccurrence,
   updateTask,
 } from './records.js';
 import {
@@ -34,9 +35,10 @@ import {
   markMedicationTaken,
 } from '../reminders/generate.js';
 import { parseThaiDateTime } from '../thai/date.js';
+import { expandOccurrences } from '../reminders/occurrences.js';
 import { ASSET_CATEGORY_LABEL } from '../intent/assetTypes.js';
 import { formatThaiDate, formatThaiTime } from '../line/format.js';
-import { parseAmountToSatang, formatSatang } from '../thai/number.js';
+import { parseAmountToSatang, formatSatang, normalizeThaiDigits } from '../thai/number.js';
 
 /**
  * Direct commands — actions that skip the confirm-card pipeline entirely.
@@ -80,6 +82,7 @@ const COMPARE_MONTHS = /^(?:เทียบ(?:กับ)?เดือน(?:ท�
 const SPEND_SUMMARY = /^(?:สรุป(?:รายจ่าย)?|ใช้ไปเท่าไหร่|ใช้เงินไปเท่าไหร่)\s*(.*)$/;
 const PAY_BILL = /^(?:จ่ายบิลแล้ว|จ่ายบิล|บิลจ่ายแล้ว)\s+(.+)$/;
 const TASK_BOARD = /^(?:บอร์ดงาน|งานค้าง|สรุปงาน)$/;
+const SKIP_OCCURRENCE = /^(?:ข้ามนัด|งดนัด)\s+(.+)$/;
 
 /** Returns null when the text does not match any direct command. */
 export async function tryDirectCommand(
@@ -143,7 +146,65 @@ export async function tryDirectCommand(
   const del = text.match(DELETE_BY_NAME);
   if (del) return handleDeleteByName(ctx, del[1] as DeletableDomain, (del[2] as string).trim());
 
+  const skip = text.match(SKIP_OCCURRENCE);
+  if (skip) return handleSkipOccurrence(ctx, (skip[1] as string).trim());
+
   return null;
+}
+
+/**
+ * "ข้ามนัด กายภาพ พรุ่งนี้" — one date of a repeating appointment stops
+ * happening; every other week carries on. `ลบนัด` deletes the whole series,
+ * which is almost never what someone means when the physio is off for a week.
+ *
+ * Needs a named date: guessing which week to cancel is not a guess worth
+ * making. Refuses to choose between two appointments that both match.
+ */
+async function handleSkipOccurrence(ctx: CommandContext, rest: string): Promise<CommandResult> {
+  const example = 'เช่น "ข้ามนัด กายภาพ พรุ่งนี้" หรือ "ข้ามนัด กายภาพ 21 ก.ย."';
+  const when = parseThaiDateTime(rest, ctx.now);
+  if (!when?.hasExplicitDate) return { reply: `ระบุวันที่จะข้ามด้วยนะครับ ${example}` };
+
+  // The parser matched against Arabic digits; cut from the same text, or
+  // "๒๑ ก.ย." would stay stuck to the appointment's name.
+  let name = normalizeThaiDigits(rest);
+  for (const part of when.matched) name = name.replace(part, ' ');
+  name = name.replace(/\s+/g, ' ').trim();
+  if (!name) return { reply: `ระบุชื่อนัดด้วยนะครับ ${example}` };
+
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const day = when.start.setZone(zone).startOf('day');
+
+  const series = await ctx.prisma.event.findMany({
+    where: { familyId: ctx.familyId, rrule: { not: null }, title: { contains: name } },
+    select: { id: true, title: true, startAt: true, rrule: true, exdates: true },
+  });
+  if (series.length === 0) return { reply: `ไม่พบนัดที่เกิดซ้ำชื่อ "${name}" ครับ` };
+
+  const hits: Array<{ id: string; title: string; at: DateTime }> = [];
+  for (const ev of series) {
+    try {
+      for (const at of expandOccurrences(ev.startAt, ev.rrule as string, zone, day, day.endOf('day'), 5, ev.exdates)) {
+        hits.push({ id: ev.id, title: ev.title, at });
+      }
+    } catch {
+      // A rule that does not parse has no dates to skip.
+    }
+  }
+
+  if (hits.length === 0) {
+    return { reply: `"${name}" ไม่มีนัดวัน${formatThaiDate(day)} ครับ` };
+  }
+  if (hits.length > 1) {
+    const list = hits.map((h) => `• ${h.title} ${formatThaiTime(h.at)}`).join('\n');
+    return { reply: `วันนั้นมีหลายนัดที่ตรงกัน ระบุชื่อให้ชัดขึ้นนะครับ\n${list}` };
+  }
+
+  const hit = hits[0] as { id: string; title: string; at: DateTime };
+  await skipOccurrence(ctx, hit.id, hit.at);
+  return {
+    reply: `✅ ข้าม "${hit.title}" วัน${formatThaiDate(hit.at)} แล้ว ครั้งอื่นยังเตือนตามเดิมครับ`,
+  };
 }
 
 async function handleMedTaken(ctx: CommandContext, nameHint?: string): Promise<CommandResult> {

@@ -459,6 +459,62 @@ describe('tryDirectCommand — สถานะระบบ', () => {
   });
 });
 
+describe('tryDirectCommand — ข้ามนัด', () => {
+  // NOW is Friday 4 Sep 2026; the physio is every Monday at 09:00.
+  async function weeklyPhysio(title = 'กายภาพแม่') {
+    return db.prisma.event.create({
+      data: {
+        familyId,
+        title,
+        category: 'MEDICAL',
+        startAt: DateTime.fromISO('2026-08-31T09:00', { zone: ZONE }).toJSDate(),
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+      },
+    });
+  }
+
+  it('skips one Monday and leaves the series in place', async () => {
+    const series = await weeklyPhysio();
+
+    const result = await tryDirectCommand('ข้ามนัด กายภาพ 14 ก.ย.', ctx());
+    expect(result?.reply).toContain('ข้าม "กายภาพแม่"');
+    expect(result?.reply).toContain('14 ก.ย.');
+
+    const after = await db.prisma.event.findUniqueOrThrow({ where: { id: series.id } });
+    expect(after.rrule).toBe('FREQ=WEEKLY;BYDAY=MO');
+    expect(after.exdates.map((d) => DateTime.fromJSDate(d, { zone: ZONE }).toFormat('dd HH:mm'))).toEqual([
+      '14 09:00',
+    ]);
+  });
+
+  it('reads Thai digits in the date', async () => {
+    const series = await weeklyPhysio();
+    await tryDirectCommand('ข้ามนัด กายภาพ ๑๔ ก.ย.', ctx());
+    const after = await db.prisma.event.findUniqueOrThrow({ where: { id: series.id } });
+    expect(after.exdates).toHaveLength(1);
+  });
+
+  it('says so when the appointment does not fall on that day', async () => {
+    await weeklyPhysio();
+    const result = await tryDirectCommand('ข้ามนัด กายภาพ 15 ก.ย.', ctx()); // a Tuesday
+    expect(result?.reply).toContain('ไม่มีนัด');
+  });
+
+  it('will not guess which week when no date is named', async () => {
+    await weeklyPhysio();
+    const result = await tryDirectCommand('ข้ามนัด กายภาพ', ctx());
+    expect(result?.reply).toContain('ระบุวันที่');
+  });
+
+  it('asks rather than choosing between two matching appointments', async () => {
+    await weeklyPhysio('กายภาพแม่');
+    await weeklyPhysio('กายภาพพ่อ');
+    const result = await tryDirectCommand('ข้ามนัด กายภาพ 14 ก.ย.', ctx());
+    expect(result?.reply).toContain('หลายนัด');
+    expect(await db.prisma.event.count({ where: { exdates: { isEmpty: false } } })).toBe(0);
+  });
+});
+
 describe('tryDirectCommand — บอร์ดงาน', () => {
   it('lists what is still open, marking what is in progress', async () => {
     await persistDraft({ kind: 'task', title: 'โทรหาช่าง' }, ctx());
