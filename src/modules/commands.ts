@@ -36,6 +36,7 @@ import {
 } from '../reminders/generate.js';
 import { parseThaiDateTime } from '../thai/date.js';
 import { expandOccurrences } from '../reminders/occurrences.js';
+import { listCalendar } from './calendar.js';
 import { ASSET_CATEGORY_LABEL } from '../intent/assetTypes.js';
 import { formatThaiDate, formatThaiTime } from '../line/format.js';
 import { parseAmountToSatang, formatSatang, normalizeThaiDigits } from '../thai/number.js';
@@ -83,6 +84,61 @@ const SPEND_SUMMARY = /^(?:สรุป(?:รายจ่าย)?|ใช้ไ�
 const PAY_BILL = /^(?:จ่ายบิลแล้ว|จ่ายบิล|บิลจ่ายแล้ว)\s+(.+)$/;
 const TASK_BOARD = /^(?:บอร์ดงาน|งานค้าง|สรุปงาน)$/;
 const SKIP_OCCURRENCE = /^(?:ข้ามนัด|งดนัด)\s+(.+)$/;
+const AGENDA_RANGE = /^(?:ดู)?นัด(วันนี้|พรุ่งนี้|มะรืน|สัปดาห์นี้|อาทิตย์นี้|สัปดาห์หน้า|อาทิตย์หน้า)$/;
+const AGENDA_DAY = /^(?:ดู)?นัดวันที่\s*(.+)$/;
+const SHOPPING_LIST = /^(?:ลิสต์ซื้อของ|ดูลิสต์ซื้อของ|รายการซื้อของ|ต้องซื้ออะไรบ้าง)$/;
+
+/**
+ * What a command does, for the ChatGPT path (see intent/commandRewriter.ts):
+ * 'read' is answered straight away, 'act' changes something and waits for a
+ * tap. Null is not a command at all.
+ *
+ * Kept beside the dispatcher below and checked against every example the
+ * model is taught (tests/integration/catalog.test.ts), so the two cannot
+ * drift apart without a failing test.
+ */
+export function classifyCommand(text: string): 'read' | 'act' | null {
+  const reads = [
+    EMERGENCY_INFO,
+    DEBT_SUMMARY,
+    LOAN_SUMMARY,
+    ASSET_SUMMARY,
+    DEPOSIT_SUMMARY,
+    NET_WORTH_SUMMARY,
+    TASK_BOARD,
+    SYSTEM_STATUS,
+    COMPARE_MONTHS,
+    SPEND_SUMMARY,
+    AGENDA_RANGE,
+    AGENDA_DAY,
+    SHOPPING_LIST,
+  ];
+  const acts = [
+    TAKEN_MED,
+    CHORE_DONE,
+    SET_BLOOD_TYPE,
+    SET_ALLERGIES,
+    SET_CONDITIONS,
+    SET_BUDGET,
+    UNDO_LAST,
+    DELETE_BY_NAME,
+    CLOSE_TASK,
+    SET_BIRTHDAY,
+    PAY_BILL,
+    SKIP_OCCURRENCE,
+  ];
+  if (acts.some((re) => re.test(text))) return 'act';
+  if (reads.some((re) => re.test(text))) return 'read';
+  // "ค่าไฟเดือนที่แล้ว" — a category followed by a period. Not "ประชุม 25 ก.ย.":
+  // a day number before the month makes it a date, and a date is something
+  // being scheduled, not asked about.
+  const month = text.match(MONTH_REF);
+  if (month?.index !== undefined && month.index > 0) {
+    const before = text.slice(0, month.index);
+    if (!/\d\s*$/.test(normalizeThaiDigits(before))) return 'read';
+  }
+  return null;
+}
 
 /** Returns null when the text does not match any direct command. */
 export async function tryDirectCommand(
@@ -122,6 +178,17 @@ export async function tryDirectCommand(
 
   if (TASK_BOARD.test(text)) return handleTaskBoard(ctx);
 
+  const agendaRange = text.match(AGENDA_RANGE);
+  if (agendaRange) return handleAgendaRange(ctx, agendaRange[1] as string);
+
+  const agendaDay = text.match(AGENDA_DAY);
+  if (agendaDay) {
+    const answer = await handleAgendaDay(ctx, agendaDay[1] as string);
+    if (answer) return answer;
+  }
+
+  if (SHOPPING_LIST.test(text)) return handleShoppingList(ctx);
+
   const birthday = text.match(SET_BIRTHDAY);
   if (birthday) return handleSetBirthday(ctx, (birthday[1] as string).trim(), birthday[2] as string);
 
@@ -150,6 +217,100 @@ export async function tryDirectCommand(
   if (skip) return handleSkipOccurrence(ctx, (skip[1] as string).trim());
 
   return null;
+}
+
+/** "นัดพรุ่งนี้" / "นัดสัปดาห์หน้า" — appointments on the days they happen. */
+async function handleAgendaRange(ctx: CommandContext, range: string): Promise<CommandResult> {
+  const today = ctx.now.startOf('day');
+  const spans: Record<string, [DateTime, DateTime, string]> = {
+    วันนี้: [today, today.endOf('day'), 'วันนี้'],
+    พรุ่งนี้: [today.plus({ days: 1 }), today.plus({ days: 1 }).endOf('day'), 'พรุ่งนี้'],
+    มะรืน: [today.plus({ days: 2 }), today.plus({ days: 2 }).endOf('day'), 'มะรืนนี้'],
+    สัปดาห์นี้: [today, today.endOf('week'), 'สัปดาห์นี้'],
+    อาทิตย์นี้: [today, today.endOf('week'), 'สัปดาห์นี้'],
+    สัปดาห์หน้า: [today.plus({ weeks: 1 }).startOf('week'), today.plus({ weeks: 1 }).endOf('week'), 'สัปดาห์หน้า'],
+    อาทิตย์หน้า: [today.plus({ weeks: 1 }).startOf('week'), today.plus({ weeks: 1 }).endOf('week'), 'สัปดาห์หน้า'],
+  };
+  const [from, to, label] = spans[range] ?? spans['วันนี้']!;
+  return agendaReply(ctx, from, to, label);
+}
+
+/**
+ * "นัดวันที่ 21 ก.ย." — returns null when there is more than a date after it,
+ * because "นัดวันที่ 21 ก.ย. ไปหาหมอ" is someone making an appointment, not
+ * asking about one.
+ */
+async function handleAgendaDay(ctx: CommandContext, rest: string): Promise<CommandResult | null> {
+  const when = parseThaiDateTime(rest, ctx.now);
+  if (!when?.hasExplicitDate) return null;
+
+  let leftover = normalizeThaiDigits(rest);
+  for (const part of when.matched) leftover = leftover.replace(part, ' ');
+  if (leftover.trim().length > 0) return null;
+
+  const day = when.start.setZone(ctx.now.zone).startOf('day');
+  return agendaReply(ctx, day, day.endOf('day'), `วันที่ ${day.day}`);
+}
+
+async function agendaReply(
+  ctx: CommandContext,
+  from: DateTime,
+  to: DateTime,
+  label: string,
+): Promise<CommandResult> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const { items, holidays } = await listCalendar(ctx.prisma, ctx.familyId, from, to, zone);
+
+  const days = new Map<string, string[]>();
+  const lineFor = (key: string) => {
+    const existing = days.get(key);
+    if (existing) return existing;
+    const created: string[] = [];
+    days.set(key, created);
+    return created;
+  };
+
+  for (const h of holidays) lineFor(h.date).push(`🎌 ${h.name}`);
+  for (const ev of items) {
+    const start = DateTime.fromISO(ev.startAt, { zone });
+    const time = ev.allDay ? 'ทั้งวัน' : start.toFormat('HH:mm');
+    const where = ev.location ? ` @ ${ev.location}` : '';
+    lineFor(start.toFormat('yyyy-MM-dd')).push(`• ${time} ${ev.title}${where}${ev.repeats ? ' 🔁' : ''}`);
+  }
+
+  const range = from.hasSame(to, 'day')
+    ? formatThaiDate(from)
+    : `${formatThaiDate(from)} – ${formatThaiDate(to)}`;
+
+  if (items.length === 0) {
+    const holidayNote = holidays.length > 0 ? `\n${holidays.map((h) => `🎌 ${h.name}`).join('\n')}` : '';
+    return { reply: `📅 ${label} (${range}) ไม่มีนัดครับ${holidayNote}` };
+  }
+
+  const singleDay = from.hasSame(to, 'day');
+  const body = [...days.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, lines]) => {
+      // A week needs a heading per day; a single day already has one.
+      if (singleDay) return lines.join('\n');
+      return `${formatThaiDate(DateTime.fromISO(key, { zone }))}\n${lines.join('\n')}`;
+    })
+    .join('\n\n');
+
+  return { reply: `📅 นัด${label} (${range})\n\n${body}` };
+}
+
+/** "ต้องซื้ออะไรบ้าง" — whatever is still on the list. */
+async function handleShoppingList(ctx: CommandContext): Promise<CommandResult> {
+  const items = await ctx.prisma.shoppingItem.findMany({
+    where: { familyId: ctx.familyId, boughtAt: null },
+    orderBy: { createdAt: 'asc' },
+    select: { name: true, qty: true },
+  });
+  if (items.length === 0) return { reply: '🛒 ลิสต์ซื้อของว่างอยู่ครับ' };
+
+  const lines = items.map((i) => `• ${i.name}${i.qty ? ` (${i.qty})` : ''}`);
+  return { reply: `🛒 ต้องซื้อ ${items.length} อย่าง\n${lines.join('\n')}` };
 }
 
 /**
@@ -531,11 +692,14 @@ async function handleCategoryHistory(
   const ref = parseMonthRef(text, ctx.now);
   if (!ref) return null;
 
-  const head = text.replace(MONTH_REF, '').replace(/^ค่า/, '').trim();
+  const head = text.replace(MONTH_REF, '').trim();
   if (head.length === 0) return null;
 
+  // "ค่าไฟ 800" typed in chat files under "ไฟ", but a category made in the app
+  // or carried over from a bill is often "ค่าไฟ" itself — match either way.
+  const bare = (name: string) => name.replace(/^ค่า/, '').trim();
   const categories = await knownCategories(ctx.prisma, ctx.familyId);
-  const match = categories.find((name) => name === head);
+  const match = categories.find((name) => bare(name) === bare(head));
   if (!match) return null;
 
   const zone = ctx.now.zoneName ?? 'Asia/Bangkok';

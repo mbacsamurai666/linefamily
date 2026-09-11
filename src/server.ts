@@ -5,7 +5,7 @@ import OpenAI from 'openai';
 import { loadConfig, aiEnabledForModule, type Config } from './config/index.js';
 import { db, disconnect } from './db/client.js';
 import { ChainedIntentParser } from './intent/ChainedIntentParser.js';
-import { OpenAiIntentParser } from './intent/OpenAiIntentParser.js';
+import { OpenAiCommandRewriter, type CommandRewriter } from './intent/commandRewriter.js';
 import { RuleIntentParser } from './intent/RuleIntentParser.js';
 import type { IntentParser } from './intent/types.js';
 import { VisionParser } from './intent/VisionParser.js';
@@ -28,28 +28,28 @@ const log = (msg: string, meta?: Record<string, unknown>) => {
   console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...meta }));
 };
 
-/**
- * Builds the intent chain. Turning AI off is not a branch inside the parsers —
- * it is this function returning a chain with one parser in it.
- */
-function buildParser(cfg: Config, openai: OpenAI | null): IntentParser {
-  const parsers: IntentParser[] = [new RuleIntentParser()];
-
-  if (openai && aiEnabledForModule(cfg, 'intent')) {
-    parsers.push(
-      new OpenAiIntentParser({
-        client: openai,
-        model: cfg.OPENAI_TEXT_MODEL,
-        onError: (err) => log('llm parse failed', { err: String(err) }),
-      }),
-    );
-    log('intent chain: rule -> llm', { model: cfg.OPENAI_TEXT_MODEL });
-  } else {
-    log('intent chain: rule only (AI disabled)');
-  }
-
-  return new ChainedIntentParser(parsers, {
+/** The rules — always on, and the only thing that ever turns text into a draft. */
+function buildParser(): IntentParser {
+  return new ChainedIntentParser([new RuleIntentParser()], {
     onParserUsed: (name, result) => log('parser used', { parser: name, kind: result.kind }),
+  });
+}
+
+/**
+ * ChatGPT's reading of whatever the rules could not read. Turning AI off is not
+ * a branch anywhere else — it is this returning undefined, and the bot running
+ * on rules alone.
+ */
+function buildRewriter(cfg: Config, openai: OpenAI | null): CommandRewriter | undefined {
+  if (!openai || !aiEnabledForModule(cfg, 'intent')) {
+    log('chat commands: rules only (AI disabled)');
+    return undefined;
+  }
+  log('chat commands: rules -> chatgpt', { model: cfg.OPENAI_TEXT_MODEL });
+  return new OpenAiCommandRewriter({
+    client: openai,
+    model: cfg.OPENAI_TEXT_MODEL,
+    onError: (err) => log('chatgpt rewrite failed', { err: String(err) }),
   });
 }
 
@@ -78,7 +78,8 @@ async function main(): Promise<void> {
   const drafts = new DraftStore();
   const photoTargets = new PhotoTargetStore();
   const openai = cfg.aiUsable ? new OpenAI({ apiKey: cfg.OPENAI_API_KEY }) : null;
-  const parser = buildParser(cfg, openai);
+  const parser = buildParser();
+  const rewriter = buildRewriter(cfg, openai);
   const visionParser = buildVisionParser(cfg, openai);
   const blobApi = new messagingApi.MessagingApiBlobClient({
     channelAccessToken: cfg.LINE_CHANNEL_ACCESS_TOKEN,
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
     blobApi,
     ...(visionParser ? { visionParser } : {}),
     parser,
+    ...(rewriter ? { rewriter } : {}),
     drafts,
     photoTargets,
     defaultTimezone: cfg.TZ,

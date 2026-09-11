@@ -1,9 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
 import type { messagingApi, WebhookEvent } from '@line/bot-sdk';
 import { DateTime } from 'luxon';
-import type { FamilyContext, IntentParser } from '../intent/types.js';
+import type { CommandRewriter, RewriteContext } from '../intent/commandRewriter.js';
+import type { FamilyContext, IntentParser, ParseResult } from '../intent/types.js';
 import type { VisionParser } from '../intent/VisionParser.js';
-import { tryDirectCommand } from '../modules/commands.js';
+import { classifyCommand, tryDirectCommand } from '../modules/commands.js';
 import { persistDraft } from '../modules/persist.js';
 import { buildClarifyCard } from './flex/clarify.js';
 import { buildConfirmCard } from './flex/confirm.js';
@@ -31,7 +32,21 @@ export interface WebhookDeps {
   visionParser?: VisionParser;
   /** Remembers which document an incoming photo belongs to. */
   photoTargets?: PhotoTargetStore;
+  /** ChatGPT's translation of plain speech into commands. Omit to run with rules only. */
+  rewriter?: CommandRewriter;
 }
+
+/** A rule-parsed draft at or above this goes straight to its confirm card. */
+const RULE_CONFIDENT = 0.7;
+
+/**
+ * How sure ChatGPT must be before the bot acts on its reading. A 'read' is
+ * answered in the group at once, and answering a remark nobody addressed to
+ * the bot is the one mistake here that cannot be taken back — so it needs
+ * more. Anything that changes data waits for a tap or a confirm card anyway.
+ */
+const REWRITE_READ_CONFIDENT = 0.75;
+const REWRITE_CHANGE_CONFIDENT = 0.5;
 
 const HELP_TEXT = [
   'พิมพ์ได้เลยแบบนี้',
@@ -65,6 +80,12 @@ const HELP_TEXT = [
   '• "สรุปหนี้" — ดูว่าใครติดใครอยู่เท่าไหร่เดือนนี้',
   '• "สรุปเงินกู้" / "สรุปทรัพย์สิน" / "สรุปเงินฝาก" — ดูรายการที่บันทึกไว้',
   '• "สรุปฐานะการเงิน" — ภาพรวมเงินให้ยืม + ทรัพย์สิน + เงินฝาก',
+  '• "นัดพรุ่งนี้" / "นัดสัปดาห์นี้" — ดูว่ามีนัดอะไรบ้าง',
+  '• "ลิสต์ซื้อของ" — ดูของที่ยังต้องซื้อ',
+  '• "ข้ามนัด กายภาพ 21 ก.ย." — งดนัดที่เกิดซ้ำเฉพาะวันนั้น',
+  '',
+  '💬 พิมพ์แบบพูดปกติก็ได้ เช่น "พรุ่งนี้มีนัดอะไรบ้าง", "จ่ายค่าน้ำแล้วนะ",',
+  '"งดกายภาพแม่จันทร์หน้า" — บอทจะแปลเป็นคำสั่งให้ ถ้าเป็นการเปลี่ยนข้อมูลจะให้กดยืนยันก่อนเสมอ',
   '',
   'บันทึกผิด แก้ได้:',
   '• "ยกเลิกล่าสุด" — ลบสิ่งที่เพิ่งบันทึกไปล่าสุด',
@@ -229,7 +250,26 @@ async function handleMessage(
 
   const result = await deps.parser.parse(text, ctx);
 
-  if (result.kind === 'unknown') {
+  if (result.kind !== 'unknown' && result.confidence >= RULE_CONFIDENT) {
+    return replyWithDraft(event.replyToken, deps, family, member?.id ?? null, result);
+  }
+
+  // The rules could not read it. Ask ChatGPT what was meant — in the bot's
+  // own words, so whatever it says is carried out by the same handlers.
+  let chatter = false;
+  if (deps.rewriter) {
+    const cmdCtx = {
+      prisma: deps.prisma,
+      familyId: family.id,
+      memberId: member?.id ?? null,
+      now: ctx.now,
+    };
+    const outcome = await tryRewrite(event.replyToken, text, deps, family, cmdCtx, ctx);
+    if (outcome === 'handled') return;
+    chatter = outcome === 'chatter';
+  }
+
+  if (result.kind === 'unknown' || chatter) {
     // Staying quiet on ordinary chatter is deliberate — a bot that answers
     // every message in a family group gets muted within a day. The one
     // exception is being directly addressed: someone who @-mentioned the bot
@@ -244,10 +284,22 @@ async function handleMessage(
     return;
   }
 
+  // A hesitant rule reading, and nothing better from ChatGPT — still worth a
+  // card, since the card is where a wrong guess gets corrected.
+  return replyWithDraft(event.replyToken, deps, family, member?.id ?? null, result);
+}
+
+async function replyWithDraft(
+  replyToken: string,
+  deps: WebhookDeps,
+  family: { id: string; timezone: string },
+  memberId: string | null,
+  result: Exclude<ParseResult, { kind: 'unknown' }>,
+): Promise<void> {
   const token = deps.drafts.put({
     draft: result.draft,
     familyId: family.id,
-    memberId: member?.id ?? null,
+    memberId,
     source: result.source,
     confidence: result.confidence,
   });
@@ -255,7 +307,7 @@ async function handleMessage(
   deps.log?.('draft created', { source: result.source, kind: result.kind });
 
   await deps.api.replyMessage({
-    replyToken: event.replyToken,
+    replyToken,
     messages: [
       buildConfirmCard({
         draft: result.draft,
@@ -266,6 +318,121 @@ async function handleMessage(
       }),
     ],
   });
+}
+
+/**
+ * Carry out ChatGPT's reading of a message, by the effect of the command it
+ * produced:
+ *   read   → answered now, with the command shown so people learn it
+ *   act    → shown with a "✅ ยืนยัน" button that sends the command as a
+ *            message; the tap is the confirmation, and the command then runs
+ *            through tryDirectCommand like anything typed
+ *   record → parsed by the rules into a draft, onto the usual confirm card
+ * 'chatter' means ChatGPT judged the message was not meant for the bot at all;
+ * 'nothing' means there was no usable reading, so the caller carries on.
+ */
+async function tryRewrite(
+  replyToken: string,
+  text: string,
+  deps: WebhookDeps,
+  family: { id: string; timezone: string },
+  cmdCtx: Parameters<typeof tryDirectCommand>[1],
+  ctx: FamilyContext,
+): Promise<'handled' | 'chatter' | 'nothing'> {
+  const rewriter = deps.rewriter;
+  if (!rewriter) return 'nothing';
+
+  const rewrite = await rewriter.rewrite(text, await rewriteContext(deps.prisma, ctx));
+  if (rewrite.kind === 'chatter') return 'chatter';
+  if (rewrite.kind === 'unavailable') return 'nothing';
+
+  const { command, confidence } = rewrite;
+  const effect = classifyCommand(command);
+  // The message itself stays out of the log; what it became is enough to debug.
+  deps.log?.('rewritten', { effect: effect ?? 'record', confidence });
+
+  if (effect === 'read') {
+    if (confidence < REWRITE_READ_CONFIDENT) return 'nothing';
+    const answer = await tryDirectCommand(command, cmdCtx);
+    if (!answer) return 'nothing';
+
+    await deps.api.replyMessage({
+      replyToken,
+      messages: [{ type: 'text', text: `${answer.reply}\n\n💬 ครั้งหน้าพิมพ์ "${command}" ก็ได้ครับ` }],
+    });
+    return 'handled';
+  }
+
+  if (confidence < REWRITE_CHANGE_CONFIDENT) return 'nothing';
+
+  if (effect === 'act') {
+    await deps.api.replyMessage({
+      replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: `จะทำตามนี้นะครับ\n👉 ${command}\n\nถูกต้องกด "✅ ยืนยัน" ด้านล่าง`,
+          quickReply: {
+            items: [{ type: 'action', action: { type: 'message', label: '✅ ยืนยัน', text: command } }],
+          },
+        },
+      ],
+    });
+    return 'handled';
+  }
+
+  const parsed = await deps.parser.parse(command, ctx);
+  if (parsed.kind === 'unknown') return 'nothing';
+
+  await replyWithDraft(replyToken, deps, family, cmdCtx.memberId, {
+    ...parsed,
+    source: 'llm',
+    // The card should look only as sure as the least sure of the two readings.
+    confidence: Math.min(parsed.confidence, confidence),
+  });
+  return 'handled';
+}
+
+/** The names ChatGPT may refer to, so it picks "กายภาพแม่" rather than inventing one. */
+async function rewriteContext(prisma: PrismaClient, ctx: FamilyContext): Promise<RewriteContext> {
+  const [events, bills, tasks, chores] = await Promise.all([
+    prisma.event.findMany({
+      where: {
+        familyId: ctx.familyId,
+        OR: [
+          { rrule: { not: null } },
+          {
+            startAt: {
+              gte: ctx.now.minus({ days: 1 }).toJSDate(),
+              lte: ctx.now.plus({ days: 45 }).toJSDate(),
+            },
+          },
+        ],
+      },
+      select: { title: true },
+      orderBy: { startAt: 'asc' },
+      take: 40,
+    }),
+    prisma.bill.findMany({ where: { familyId: ctx.familyId, active: true }, select: { name: true } }),
+    prisma.task.findMany({
+      where: { familyId: ctx.familyId, status: { not: 'DONE' } },
+      select: { title: true },
+    }),
+    prisma.chore.findMany({ where: { familyId: ctx.familyId, active: true }, select: { name: true } }),
+  ]);
+
+  // Medication names are deliberately not sent: "กินยาแล้ว" works without one,
+  // and health details are the last thing that needs to leave the server.
+  return {
+    now: ctx.now,
+    timezone: ctx.timezone,
+    memberNames: ctx.memberNames,
+    categoryNames: ctx.categoryNames,
+    eventTitles: events.map((e) => e.title),
+    billNames: bills.map((b) => b.name),
+    taskTitles: tasks.map((t) => t.title),
+    choreNames: chores.map((c) => c.name),
+  };
 }
 
 /**

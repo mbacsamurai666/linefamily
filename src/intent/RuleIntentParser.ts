@@ -449,6 +449,8 @@ function extractAttendee(
   return null;
 }
 
+const CALLS_OFF = /^(?:งด|ยกเลิก|เลื่อน|ข้าม|ไม่ไป|ไม่ต้องไป|ไม่มี)/;
+
 function matchEvent(text: string, ctx: FamilyContext): ParseResult {
   const when = parseThaiDateTime(text, ctx.now);
   if (!when) return { kind: 'unknown' };
@@ -473,7 +475,19 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
   // the LLM gets a chance to read the sentence as a whole and catch what a
   // literal-match parser cannot, without slowing down every message that
   // already names its date explicitly.
-  const confidence = !when.hasExplicitDate
+  //
+  // A title that opens by calling something off — "งดกายภาพแม่จันทร์หน้า",
+  // "ยกเลิกนัดหมอพรุ่งนี้" — is about an appointment that already exists, not
+  // a new one called "งดกายภาพแม่". Held below the threshold for the same
+  // reason, so ChatGPT can read it as the change it is. ("เปลี่ยน" is left
+  // out: "เปลี่ยนน้ำมันเครื่อง พรุ่งนี้" really is a new appointment.)
+  //
+  // And a day word with nothing else behind it — no time, no recognisable
+  // kind of appointment, nobody named — is the weakest reading there is:
+  // "วันนี้อากาศดีจัง" is exactly that shape. Still a card when AI is off,
+  // but ChatGPT gets to say it was only chat.
+  const bareDayRemark = when.allDay && category === 'OTHER' && !attendee && !repeat;
+  const confidence = !when.hasExplicitDate || CALLS_OFF.test(title) || bareDayRemark
     ? 0.6
     : category === 'OTHER' && !attendee
       ? 0.7
