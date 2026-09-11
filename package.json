@@ -1,0 +1,46 @@
+{
+  "name": "familys-management",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "richmenu:install": "tsx src/line/richmenu.ts",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "test:all": "npm test && npm run test:integration",
+    "liff:dev": "npm run dev --prefix liff",
+    "liff:build": "npm run build --prefix liff"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@line/bot-sdk": "^9.5.0",
+    "@prisma/client": "^6.2.1",
+    "hono": "^4.6.14",
+    "luxon": "^3.5.0",
+    "openai": "^4.77.0",
+    "rrule": "^2.8.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@napi-rs/canvas": "^1.0.8",
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.10.5",
+    "prisma": "^6.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

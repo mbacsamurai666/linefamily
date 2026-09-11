@@ -1,0 +1,2341 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  api,
+  type Asset,
+  type AgendaItem,
+  type BillItem,
+  type ChoreItem,
+  type DashboardData,
+  type Deposit,
+  type DocumentItem,
+  type EventDetail,
+  type EventSummary,
+  type ExpenseSummary,
+  type Loan,
+  type MedicationItem,
+  type Me,
+  type ShoppingItem,
+  type TaskItem,
+  type TransactionItem,
+} from './api.js';
+import { Mascot, moodForDay } from './Mascot.js';
+import {
+  ASSET_CATEGORIES,
+  EVENT_CATEGORIES,
+  assetCategoryIcon,
+  assetCategoryLabel,
+  baht,
+  cadenceLabel,
+  clockHHmm,
+  dayKey,
+  documentTypeLabel,
+  eventCategoryColor,
+  eventCategoryLabel,
+  kindLabel,
+  minutesOfDay,
+  thaiDate,
+  thaiFullDate,
+  thaiMonthYear,
+  thaiShortDayMonth,
+  thaiTimeOnly,
+} from './format.js';
+
+type Tab = 'dashboard' | 'tasks' | 'agenda' | 'money' | 'shopping' | 'manage';
+
+const WEEKDAY_LABELS = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+
+/** "YYYY-MM-DD" + N days -> "YYYY-MM-DD", via local Date field arithmetic
+ * (matches how the month grid itself builds day keys) rather than parsing
+ * the string as an ISO instant, which would be UTC-based and off by a
+ * timezone offset. */
+function addDaysToKey(key: string, delta: number): string {
+  const [y, m, d] = key.split('-').map(Number) as [number, number, number];
+  const dt = new Date(y, m - 1, d + delta);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+/** The Sunday on or before `key`. */
+function weekStartKeyOf(key: string): string {
+  const [y, m, d] = key.split('-').map(Number) as [number, number, number];
+  const dow = new Date(y, m - 1, d).getDay(); // 0 = Sunday
+  return addDaysToKey(key, -dow);
+}
+
+const WEEK_DAY_START_HOUR = 7;
+const WEEK_DAY_END_HOUR = 21;
+const WEEK_HOUR_PX = 44;
+const WEEK_HOURS = Array.from(
+  { length: WEEK_DAY_END_HOUR - WEEK_DAY_START_HOUR + 1 },
+  (_, i) => WEEK_DAY_START_HOUR + i,
+);
+
+export default function App() {
+  const [me, setMe] = useState<Me | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('dashboard');
+
+  useEffect(() => {
+    api.me().then(setMe).catch((e: Error) => setError(e.message));
+  }, []);
+
+  if (error) return <div className="screen center error">{error}</div>;
+  if (!me) return <div className="screen center loading">กำลังโหลด...</div>;
+
+  const initial = me.displayName.trim().charAt(0) || '🏡';
+
+  return (
+    <div className="screen">
+      <header className="topbar">
+        <div className="avatar">{initial}</div>
+        <div className="greeting">บ้านเรา · {me.displayName}</div>
+      </header>
+
+      <main className="content">
+        {tab === 'dashboard' && <DashboardTab timezone={me.timezone} displayName={me.displayName} />}
+        {tab === 'tasks' && <TasksTab timezone={me.timezone} />}
+        {tab === 'agenda' && <CalendarTab timezone={me.timezone} />}
+        {tab === 'money' && <MoneyTab />}
+        {tab === 'shopping' && <ShoppingTab />}
+        {tab === 'manage' && <ManageTab />}
+      </main>
+
+      <nav className="tabbar">
+        {(
+          [
+            ['dashboard', '🏠', 'หน้าหลัก'],
+            ['tasks', '📋', 'งาน'],
+            ['agenda', '📅', 'ปฏิทิน'],
+            ['money', '💰', 'เงิน'],
+            ['shopping', '🛒', 'ซื้อของ'],
+            ['manage', '⚙️', 'จัดการ'],
+          ] as const
+        ).map(([key, icon, label]) => (
+          <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
+            <span className="tab-icon">{icon}</span>
+            <span className="tab-label">{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+/**
+ * Edit / delete buttons for one row. Deleting asks first, inline — a mis-tap
+ * on a list of small rows is easy, and nothing here can be undone from the app.
+ */
+function RowActions({
+  onEdit,
+  onDelete,
+  extra,
+}: {
+  onEdit?: () => void;
+  onDelete: () => void | Promise<void>;
+  extra?: { label: string; onClick: () => void | Promise<void> };
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (confirming) {
+    return (
+      <div className="row-actions">
+        <span className="muted">ลบรายการนี้?</span>
+        <button
+          type="button"
+          className="row-btn row-btn-danger"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onDelete();
+            } finally {
+              setBusy(false);
+              setConfirming(false);
+            }
+          }}
+        >
+          {busy ? '...' : 'ลบเลย'}
+        </button>
+        <button type="button" className="row-btn" onClick={() => setConfirming(false)}>
+          ยกเลิก
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="row-actions">
+      {extra && (
+        <button type="button" className="row-btn" onClick={() => void extra.onClick()}>
+          {extra.label}
+        </button>
+      )}
+      {onEdit && (
+        <button type="button" className="row-btn" onClick={onEdit}>
+          แก้ไข
+        </button>
+      )}
+      <button type="button" className="row-btn" onClick={() => setConfirming(true)}>
+        ลบ
+      </button>
+    </div>
+  );
+}
+
+function UpcomingSection({ heading, items }: { heading: string; items: AgendaItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">
+        {heading} ({items.length})
+      </div>
+      <ul className="list">
+        {items.map((item) => (
+          <li key={item.id} className="agenda-item">
+            <span className="badge">{kindLabel(item.kind)}</span>
+            <div className="agenda-text">
+              <div>{item.text}</div>
+              <div className="muted">{thaiTimeOnly(item.dueAt)}</div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DashboardTab({ timezone, displayName }: { timezone: string; displayName: string }) {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [incomeAmount, setIncomeAmount] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = () => api.dashboard().then(setData).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const addIncome = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountBaht = Number(incomeAmount);
+    if (!Number.isFinite(amountBaht) || amountBaht <= 0) return;
+
+    setSaving(true);
+    try {
+      await api.addExpense({ amountBaht, direction: 'IN' });
+      setIncomeAmount('');
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+  if (!data) return <p className="loading">กำลังโหลด...</p>;
+
+  const { upcoming, money, netWorth, tasks } = data;
+  const noUpcoming =
+    upcoming.today.length === 0 && upcoming.next3d.length === 0 && upcoming.next7d.length === 0;
+
+  const nwMax = Math.max(netWorth.loansOutstandingSatang, netWorth.assetsValueSatang, netWorth.depositsSatang, 1);
+
+  const openTasks = tasks.todo + tasks.doing;
+  const totalToday = openTasks + tasks.doneToday;
+  const mood = moodForDay({
+    openTasks,
+    doneToday: tasks.doneToday,
+    hour: Number(
+      new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', hourCycle: 'h23' })
+        .format(new Date()),
+    ),
+  });
+
+  return (
+    <div>
+      <div className="room">
+        <div className="wood-sign">
+          <div className="wood-sign-title">สวัสดีครับ คุณ{displayName} 👋</div>
+          <div className="wood-sign-sub">{thaiFullDate(new Date())}</div>
+        </div>
+
+        <div className="chalkboard" style={{ marginTop: 14 }}>
+          <div className="chalk-title">บอร์ดวันนี้</div>
+          <div className="chalk-row">
+            <span>นัดวันนี้</span>
+            <span className="chalk-num">{upcoming.today.length}</span>
+          </div>
+          {upcoming.today.length === 0 && (
+            <div className="chalk-note">
+              วันนี้ยังไม่มีนัดครับ
+              <div className="muted">เพิ่มได้ที่แท็บปฏิทิน</div>
+            </div>
+          )}
+          <div className="chalk-row">
+            <span>งานค้าง</span>
+            <span className="chalk-num">{openTasks}</span>
+          </div>
+          <div style={{ fontSize: 12, textAlign: 'right', marginBottom: 6 }}>
+            เสร็จวันนี้ {tasks.doneToday}/{totalToday || 0}
+          </div>
+          <div className="chalk-progress">
+            <span
+              style={{ width: `${totalToday === 0 ? 0 : (tasks.doneToday / totalToday) * 100}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="room-scene">
+          <div className="speech">
+            {openTasks === 0
+              ? 'วันนี้สบายๆ เลยครับ'
+              : tasks.doing > 0
+                ? `กำลังทำอยู่ ${tasks.doing} งานครับ`
+                : `มีงานรออยู่ ${openTasks} งานครับ`}
+          </div>
+          <Mascot who="boy" mood={mood} size={112} />
+          <Mascot who="girl" mood={mood === 'sleepy' ? 'sleepy' : 'happy'} size={112} />
+        </div>
+        <div className="room-desk" />
+      </div>
+
+      <div className="dash-section">
+        <div className="dash-section-heading">⏰ กำลังจะถึง</div>
+        {noUpcoming ? (
+          <p className="empty">ไม่มีอะไรใน 7 วันนี้ครับ</p>
+        ) : (
+          <>
+            <UpcomingSection heading="วันนี้" items={upcoming.today} />
+            <UpcomingSection heading="ใน 3 วัน" items={upcoming.next3d} />
+            <UpcomingSection heading="ใน 7 วัน" items={upcoming.next7d} />
+          </>
+        )}
+      </div>
+
+      <div className="dash-section">
+        <div className="dash-section-heading">💵 รายรับ-รายจ่ายเดือนนี้</div>
+        <div className="money-row">
+          <div className="money-tile money-in">
+            <div className="money-label">▲ รายรับ</div>
+            <div className="money-value">{baht(money.incomeSatang)}</div>
+          </div>
+          <div className="money-tile money-out">
+            <div className="money-label">▼ รายจ่าย</div>
+            <div className="money-value">{baht(money.expenseSatang)}</div>
+          </div>
+        </div>
+        <div className="total">
+          คงเหลือสุทธิ{' '}
+          <strong className={money.netSatang < 0 ? 'negative' : ''}>{baht(money.netSatang)}</strong> บาท
+        </div>
+        <form className="entry-form" onSubmit={addIncome}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="income-amount">จำนวนรายรับ (บาท)</label>
+              <input
+                id="income-amount"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="เช่น 30000"
+                value={incomeAmount}
+                onChange={(e) => setIncomeAmount(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <button type="submit" className="form-submit" disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'บันทึกรายรับ'}
+          </button>
+        </form>
+      </div>
+
+      <div className="dash-section">
+        <div className="dash-section-heading">📊 ฐานะการเงิน</div>
+        <ul className="list">
+          <li className="category-row">
+            <div className="category-name">เงินให้ยืม</div>
+            <div className="bar-track">
+              <div className="bar-fill" style={{ width: `${(netWorth.loansOutstandingSatang / nwMax) * 100}%` }} />
+            </div>
+            <div className="category-amount">{baht(netWorth.loansOutstandingSatang)}</div>
+          </li>
+          <li className="category-row">
+            <div className="category-name">ทรัพย์สิน</div>
+            <div className="bar-track">
+              <div className="bar-fill" style={{ width: `${(netWorth.assetsValueSatang / nwMax) * 100}%` }} />
+            </div>
+            <div className="category-amount">{baht(netWorth.assetsValueSatang)}</div>
+          </li>
+          <li className="category-row">
+            <div className="category-name">เงินฝาก</div>
+            <div className="bar-track">
+              <div className="bar-fill" style={{ width: `${(netWorth.depositsSatang / nwMax) * 100}%` }} />
+            </div>
+            <div className="category-amount">{baht(netWorth.depositsSatang)}</div>
+          </li>
+        </ul>
+        <div className="total">
+          รวมทั้งหมด <strong>{baht(netWorth.totalSatang)}</strong> บาท
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface CalendarTabProps {
+  timezone: string;
+}
+
+function CalendarTab({ timezone }: CalendarTabProps) {
+  const [items, setItems] = useState<AgendaItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showAddEvent, setShowAddEvent] = useState(false);
+  const [calView, setCalView] = useState<'month' | 'week'>('month');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, EventDetail>>({});
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [editingEvent, setEditingEvent] = useState<{ id: string; detail: EventDetail } | null>(null);
+
+  const todayKey = useMemo(() => dayKey(new Date().toISOString(), timezone), [timezone]);
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+  const [selected, setSelected] = useState<string>(todayKey);
+
+  const load = () => api.agenda().then((r) => setItems(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, AgendaItem[]>();
+    for (const item of items ?? []) {
+      const key = dayKey(item.dueAt, timezone);
+      const bucket = map.get(key);
+      if (bucket) bucket.push(item);
+      else map.set(key, [item]);
+    }
+    return map;
+  }, [items, timezone]);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!items) return <p className="loading">กำลังโหลด...</p>;
+
+  const { year, month } = cursor;
+  const firstWeekday = new Date(year, month, 1).getDay(); // 0 = Sunday
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells: Array<{ key: string; day: number } | null> = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    cells.push({ key, day });
+  }
+
+  const changeMonth = (delta: number) => {
+    const next = new Date(year, month + delta, 1);
+    setCursor({ year: next.getFullYear(), month: next.getMonth() });
+  };
+
+  const selectedItems = [...(byDay.get(selected) ?? [])].sort((a, b) =>
+    a.dueAt.localeCompare(b.dueAt),
+  );
+
+  const toggleDetail = async (item: AgendaItem) => {
+    if (item.kind !== 'EVENT') return;
+    if (expandedId === item.id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(item.id);
+    if (!details[item.refId]) {
+      try {
+        const detail = await api.event(item.refId);
+        setDetails((prev) => ({ ...prev, [item.refId]: detail }));
+      } catch (err) {
+        setDetailError((err as Error).message);
+      }
+    }
+  };
+
+  return (
+    <div>
+      <div className="cal-view-toggle">
+        <button className={calView === 'month' ? 'active' : ''} onClick={() => setCalView('month')}>
+          เดือน
+        </button>
+        <button className={calView === 'week' ? 'active' : ''} onClick={() => setCalView('week')}>
+          สัปดาห์
+        </button>
+      </div>
+
+      {calView === 'month' ? (
+        <>
+          <div className="cal-header">
+            <button className="cal-nav" onClick={() => changeMonth(-1)} aria-label="เดือนก่อนหน้า">
+              ‹
+            </button>
+            <div className="cal-title">{thaiMonthYear(year, month)}</div>
+            <button className="cal-nav" onClick={() => changeMonth(1)} aria-label="เดือนถัดไป">
+              ›
+            </button>
+          </div>
+
+          <div className="cal-weekdays">
+            {WEEKDAY_LABELS.map((w) => (
+              <div key={w} className="cal-weekday">
+                {w}
+              </div>
+            ))}
+          </div>
+
+          <div className="cal-grid">
+            {cells.map((cell, i) => {
+              if (!cell) return <div key={`blank-${i}`} className="cal-cell cal-cell-empty" />;
+              const count = byDay.get(cell.key)?.length ?? 0;
+              const isToday = cell.key === todayKey;
+              const isSelected = cell.key === selected;
+              return (
+                <button
+                  key={cell.key}
+                  className={[
+                    'cal-cell',
+                    isToday ? 'cal-cell-today' : '',
+                    isSelected ? 'cal-cell-selected' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  onClick={() => setSelected(cell.key)}
+                >
+                  <span>{cell.day}</span>
+                  {count > 0 && <span className="cal-dot" />}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <WeekView timezone={timezone} selected={selected} todayKey={todayKey} onSelectDay={setSelected} />
+      )}
+
+      <div className="cal-detail">
+        <div className="cal-detail-heading">
+          {selected === todayKey ? 'วันนี้' : selected}
+          {selectedItems.length > 0 && ` (${selectedItems.length})`}
+        </div>
+
+        {showAddEvent ? (
+          <AddEventForm
+            selectedDay={selected}
+            timezone={timezone}
+            onCancel={() => setShowAddEvent(false)}
+            onAdded={async () => {
+              setShowAddEvent(false);
+              await load();
+            }}
+          />
+        ) : editingEvent ? (
+          <AddEventForm
+            selectedDay={selected}
+            timezone={timezone}
+            editing={editingEvent}
+            onCancel={() => setEditingEvent(null)}
+            onAdded={async () => {
+              // The detail cache holds the pre-edit copy, so drop it.
+              setDetails((prev) => {
+                const next = { ...prev };
+                delete next[editingEvent.id];
+                return next;
+              });
+              setEditingEvent(null);
+              setExpandedId(null);
+              await load();
+            }}
+          />
+        ) : (
+          <button type="button" className="form-toggle cal-add-toggle" onClick={() => setShowAddEvent(true)}>
+            ＋ เพิ่มนัดหมาย
+          </button>
+        )}
+
+        {selectedItems.length === 0 ? (
+          <p className="empty">ไม่มีอะไรวันนี้ครับ</p>
+        ) : (
+          <ul className="list">
+            {selectedItems.map((item) => {
+              const isEvent = item.kind === 'EVENT';
+              const isExpanded = expandedId === item.id;
+              const detail = details[item.refId];
+              return (
+                <li key={item.id} className="agenda-item-wrap">
+                  <div
+                    className={`agenda-item${isEvent ? ' agenda-item-clickable' : ''}`}
+                    onClick={() => toggleDetail(item)}
+                  >
+                    <span className="badge">{kindLabel(item.kind)}</span>
+                    <div className="agenda-text">
+                      <div>{item.text}</div>
+                      <div className="muted">{thaiTimeOnly(item.dueAt)}</div>
+                    </div>
+                    {isEvent && <span className="agenda-chevron">{isExpanded ? '▾' : '▸'}</span>}
+                  </div>
+
+                  {isEvent && isExpanded && (
+                    <div className="agenda-detail">
+                      {detailError ? (
+                        <p className="error">{detailError}</p>
+                      ) : !detail ? (
+                        <p className="loading">กำลังโหลด...</p>
+                      ) : (
+                        <>
+                          <div className="agenda-detail-row">
+                            <span className="muted">ประเภท</span>
+                            <span>{eventCategoryLabel(detail.category)}</span>
+                          </div>
+                          <div className="agenda-detail-row">
+                            <span className="muted">เวลา</span>
+                            <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
+                          </div>
+                          {detail.location && (
+                            <div className="agenda-detail-row">
+                              <span className="muted">สถานที่</span>
+                              <span>{detail.location}</span>
+                            </div>
+                          )}
+                          {detail.attendeeNames.length > 0 && (
+                            <div className="agenda-detail-row">
+                              <span className="muted">สำหรับ</span>
+                              <span>{detail.attendeeNames.join(', ')}</span>
+                            </div>
+                          )}
+                          {detail.note && (
+                            <div className="agenda-detail-row">
+                              <span className="muted">หมายเหตุ</span>
+                              <span>{detail.note}</span>
+                            </div>
+                          )}
+                          <RowActions
+                            onEdit={() => {
+                              setEditingEvent({ id: item.refId, detail });
+                              setShowAddEvent(false);
+                            }}
+                            onDelete={async () => {
+                              await api.deleteEvent(item.refId);
+                              setExpandedId(null);
+                              await load();
+                            }}
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface WeekViewProps {
+  timezone: string;
+  /** "YYYY-MM-DD" of the day currently selected — determines which week shows. */
+  selected: string;
+  todayKey: string;
+  onSelectDay: (key: string) => void;
+}
+
+/** Google Calendar-style week timeline: real appointments positioned and
+ * sized by their actual start/end time, not by reminder fire time (a
+ * reminder's dueAt is offset before the event — see reminders/generate.ts —
+ * so this reads Event rows directly via GET /events instead of /agenda). */
+function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) {
+  const weekStartKey = useMemo(() => weekStartKeyOf(selected), [selected]);
+  const weekDays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, i) => {
+        const key = addDaysToKey(weekStartKey, i);
+        const day = Number(key.split('-')[2]);
+        return { key, day };
+      }),
+    [weekStartKey],
+  );
+  const weekEndKey = weekDays[6]!.key;
+
+  const [events, setEvents] = useState<EventSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<EventSummary | null>(null);
+  const [detail, setDetail] = useState<EventDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+
+  const load = () =>
+    api
+      .events(`${weekStartKey}T00:00:00`, `${weekEndKey}T23:59:59`)
+      .then((r) => setEvents(r.items))
+      .catch((e: Error) => setError(e.message));
+
+  useEffect(() => {
+    setSelectedEvent(null);
+    setDetail(null);
+    setEditing(false);
+    load();
+  }, [weekStartKey, weekEndKey]);
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, EventSummary[]>();
+    for (const ev of events ?? []) {
+      const key = dayKey(ev.startAt, timezone);
+      const bucket = map.get(key);
+      if (bucket) bucket.push(ev);
+      else map.set(key, [ev]);
+    }
+    return map;
+  }, [events, timezone]);
+
+  const selectEvent = async (ev: EventSummary) => {
+    if (selectedEvent?.id === ev.id) {
+      setSelectedEvent(null);
+      setDetail(null);
+      return;
+    }
+    setSelectedEvent(ev);
+    setDetail(null);
+    try {
+      setDetail(await api.event(ev.id));
+    } catch (err) {
+      setDetailError((err as Error).message);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div>
+      <div className="cal-header">
+        <button
+          className="cal-nav"
+          onClick={() => onSelectDay(addDaysToKey(selected, -7))}
+          aria-label="สัปดาห์ก่อนหน้า"
+        >
+          ‹
+        </button>
+        <div className="cal-title">
+          {thaiShortDayMonth(weekStartKey)} – {thaiShortDayMonth(weekEndKey)}
+        </div>
+        <button
+          className="cal-nav"
+          onClick={() => onSelectDay(addDaysToKey(selected, 7))}
+          aria-label="สัปดาห์ถัดไป"
+        >
+          ›
+        </button>
+      </div>
+
+      {!events ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : (
+        <div className="week-scroll">
+          <div className="week-grid">
+            <div className="week-gutter">
+              <div className="week-gutter-spacer" />
+              {WEEK_HOURS.map((h) => (
+                <div
+                  key={h}
+                  className="week-hour-label"
+                  style={{ top: (h - WEEK_DAY_START_HOUR) * WEEK_HOUR_PX }}
+                >
+                  {h}:00
+                </div>
+              ))}
+            </div>
+
+            {weekDays.map((d, i) => {
+              const dayEvents = byDay.get(d.key) ?? [];
+              const allDayEvents = dayEvents.filter((e) => e.allDay);
+              const timedEvents = dayEvents.filter((e) => !e.allDay);
+              const isToday = d.key === todayKey;
+              const isSelected = d.key === selected;
+
+              return (
+                <div key={d.key} className="week-day">
+                  <button
+                    type="button"
+                    className={[
+                      'week-day-header',
+                      isToday ? 'week-day-header-today' : '',
+                      isSelected ? 'week-day-header-selected' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={() => onSelectDay(d.key)}
+                  >
+                    <span className="week-day-weekday">{WEEKDAY_LABELS[i]}</span>
+                    <span className="week-day-num">{d.day}</span>
+                  </button>
+
+                  {allDayEvents.length > 0 && (
+                    <div className="week-allday">
+                      {allDayEvents.map((ev) => (
+                        <button
+                          type="button"
+                          key={ev.id}
+                          className="week-allday-chip"
+                          style={{ background: eventCategoryColor(ev.category) }}
+                          onClick={() => selectEvent(ev)}
+                        >
+                          {ev.title}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div
+                    className="week-timeline"
+                    style={{ height: (WEEK_DAY_END_HOUR - WEEK_DAY_START_HOUR) * WEEK_HOUR_PX }}
+                  >
+                    {WEEK_HOURS.map((h) => (
+                      <div
+                        key={h}
+                        className="week-hour-line"
+                        style={{ top: (h - WEEK_DAY_START_HOUR) * WEEK_HOUR_PX }}
+                      />
+                    ))}
+                    {timedEvents.map((ev) => {
+                      const startMin = Math.min(
+                        Math.max(minutesOfDay(ev.startAt, timezone), WEEK_DAY_START_HOUR * 60),
+                        WEEK_DAY_END_HOUR * 60,
+                      );
+                      const rawEndMin = ev.endAt
+                        ? minutesOfDay(ev.endAt, timezone)
+                        : startMin + 60;
+                      const endMin = Math.min(
+                        Math.max(rawEndMin, startMin + 30),
+                        WEEK_DAY_END_HOUR * 60,
+                      );
+                      const top = ((startMin - WEEK_DAY_START_HOUR * 60) / 60) * WEEK_HOUR_PX;
+                      const height = Math.max(((endMin - startMin) / 60) * WEEK_HOUR_PX, 22);
+
+                      return (
+                        <button
+                          key={ev.id}
+                          type="button"
+                          className={`week-event${selectedEvent?.id === ev.id ? ' week-event-selected' : ''}`}
+                          style={{ top, height, background: eventCategoryColor(ev.category) }}
+                          onClick={() => selectEvent(ev)}
+                        >
+                          <span className="week-event-title">{ev.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {selectedEvent && (
+        <div className="agenda-detail week-detail">
+          <div className="dash-section-heading">{selectedEvent.title}</div>
+          {detailError ? (
+            <p className="error">{detailError}</p>
+          ) : !detail ? (
+            <p className="loading">กำลังโหลด...</p>
+          ) : (
+            <>
+              <div className="agenda-detail-row">
+                <span className="muted">ประเภท</span>
+                <span>{eventCategoryLabel(detail.category)}</span>
+              </div>
+              <div className="agenda-detail-row">
+                <span className="muted">เวลา</span>
+                <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
+              </div>
+              {detail.location && (
+                <div className="agenda-detail-row">
+                  <span className="muted">สถานที่</span>
+                  <span>{detail.location}</span>
+                </div>
+              )}
+              {detail.attendeeNames.length > 0 && (
+                <div className="agenda-detail-row">
+                  <span className="muted">สำหรับ</span>
+                  <span>{detail.attendeeNames.join(', ')}</span>
+                </div>
+              )}
+              {detail.note && (
+                <div className="agenda-detail-row">
+                  <span className="muted">หมายเหตุ</span>
+                  <span>{detail.note}</span>
+                </div>
+              )}
+              {editing ? (
+                <AddEventForm
+                  selectedDay={dayKey(detail.startAt, timezone)}
+                  timezone={timezone}
+                  editing={{ id: detail.id, detail }}
+                  onCancel={() => setEditing(false)}
+                  onAdded={async () => {
+                    setEditing(false);
+                    setSelectedEvent(null);
+                    setDetail(null);
+                    await load();
+                  }}
+                />
+              ) : (
+                <RowActions
+                  onEdit={() => setEditing(true)}
+                  onDelete={async () => {
+                    await api.deleteEvent(detail.id);
+                    setSelectedEvent(null);
+                    setDetail(null);
+                    await load();
+                  }}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface AddEventFormProps {
+  /** "YYYY-MM-DD" — the day currently selected in the calendar grid. */
+  selectedDay: string;
+  onAdded: () => void;
+  onCancel: () => void;
+  /** Set when correcting an existing appointment rather than adding one. */
+  editing?: { id: string; detail: EventDetail };
+  timezone: string;
+}
+
+function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: AddEventFormProps) {
+  const existing = editing?.detail;
+  const [title, setTitle] = useState(existing?.title ?? '');
+  const [allDay, setAllDay] = useState(existing?.allDay ?? false);
+  const [time, setTime] = useState(
+    existing && !existing.allDay ? clockHHmm(existing.startAt, timezone) : '09:00',
+  );
+  const [category, setCategory] = useState<(typeof EVENT_CATEGORIES)[number]>(
+    (existing?.category as (typeof EVENT_CATEGORIES)[number]) ?? 'OTHER',
+  );
+  const [location, setLocation] = useState(existing?.location ?? '');
+  const [attendeeName, setAttendeeName] = useState(existing?.attendeeNames[0] ?? '');
+  const [note, setNote] = useState(existing?.note ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // An edit keeps the appointment on its own day, not on whichever day the
+  // grid happens to have selected.
+  const day = existing ? dayKey(existing.startAt, timezone) : selectedDay;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+
+    setSaving(true);
+    try {
+      if (editing) {
+        // null rather than omitted: an emptied field means "clear it".
+        await api.updateEvent(editing.id, {
+          title: title.trim(),
+          startAt: allDay ? day : `${day}T${time}`,
+          allDay,
+          category,
+          location: location.trim() || null,
+          attendeeName: attendeeName.trim() || null,
+          note: note.trim() || null,
+        });
+      } else {
+        await api.addEvent({
+          title: title.trim(),
+          startAt: allDay ? day : `${day}T${time}`,
+          allDay,
+          category,
+          ...(location.trim() ? { location: location.trim() } : {}),
+          ...(attendeeName.trim() ? { attendeeName: attendeeName.trim() } : {}),
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+      }
+      onAdded();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="entry-form" onSubmit={submit}>
+      {error && <p className="error">{error}</p>}
+      <div className="field">
+        <label htmlFor="event-title">เรื่อง</label>
+        <input
+          id="event-title"
+          type="text"
+          placeholder="เช่น พาแม่ไปหาหมอ"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          required
+          autoFocus
+        />
+      </div>
+
+      <label className="checkbox-field">
+        <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
+        ทั้งวัน ไม่ระบุเวลา
+      </label>
+
+      <div className="field-row">
+        {!allDay && (
+          <div className="field">
+            <label htmlFor="event-time">เวลา</label>
+            <input id="event-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          </div>
+        )}
+        <div className="field">
+          <label htmlFor="event-category">ประเภท</label>
+          <select
+            id="event-category"
+            value={category}
+            onChange={(e) => setCategory(e.target.value as typeof category)}
+          >
+            {EVENT_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {eventCategoryLabel(c)}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="field">
+        <label htmlFor="event-location">
+          สถานที่ <span className="optional">(ไม่บังคับ)</span>
+        </label>
+        <input
+          id="event-location"
+          type="text"
+          placeholder="เช่น ศิริราช"
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="event-attendee">
+          สำหรับใคร <span className="optional">(ไม่บังคับ)</span>
+        </label>
+        <input
+          id="event-attendee"
+          type="text"
+          placeholder="เช่น น้องพร"
+          value={attendeeName}
+          onChange={(e) => setAttendeeName(e.target.value)}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="event-note">
+          หมายเหตุ <span className="optional">(ไม่บังคับ)</span>
+        </label>
+        <input id="event-note" type="text" value={note} onChange={(e) => setNote(e.target.value)} />
+      </div>
+
+      <div className="field-row">
+        <button type="button" className="form-toggle" onClick={onCancel}>
+          ยกเลิก
+        </button>
+        <button type="submit" className="form-submit" disabled={saving}>
+          {saving ? 'กำลังบันทึก...' : editing ? 'บันทึกการแก้ไข' : 'บันทึกนัดหมาย'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ExpensesTab() {
+  const [summary, setSummary] = useState<ExpenseSummary | null>(null);
+  const [transactions, setTransactions] = useState<TransactionItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [amount, setAmount] = useState('');
+  const [category, setCategory] = useState('');
+  const [note, setNote] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = () =>
+    Promise.all([api.expenseSummary(), api.transactions()])
+      .then(([s, t]) => {
+        setSummary(s);
+        setTransactions(t.items);
+      })
+      .catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setAmount('');
+    setCategory('');
+    setNote('');
+  };
+
+  const startEdit = (tx: TransactionItem) => {
+    setEditingId(tx.id);
+    setAmount(String(tx.amountSatang / 100));
+    setCategory(tx.categoryName ?? '');
+    setNote(tx.note ?? '');
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountBaht = Number(amount);
+    if (!Number.isFinite(amountBaht) || amountBaht <= 0) return;
+
+    setSaving(true);
+    try {
+      if (editingId) {
+        // null rather than omitted: an emptied field means "clear it".
+        await api.updateTransaction(editingId, {
+          amountBaht,
+          categoryName: category.trim() || null,
+          note: note.trim() || null,
+        });
+      } else {
+        await api.addExpense({
+          amountBaht,
+          ...(category.trim() ? { categoryName: category.trim() } : {}),
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  const max = summary?.byCategory[0]?.amountSatang ?? 1;
+
+  return (
+    <div>
+      <div className="dash-section">
+        <div className="dash-section-heading">
+          {editingId ? '✏️ แก้ไขรายการ' : '💰 บันทึกรายจ่าย'}
+        </div>
+        <form className="entry-form" onSubmit={submit} style={{ borderTop: 'none', paddingTop: 0 }}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="exp-amount">จำนวนเงิน (บาท)</label>
+              <input
+                id="exp-amount"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="เช่น 250"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="exp-category">
+                หมวดหมู่ <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input
+                id="exp-category"
+                type="text"
+                list="exp-category-options"
+                placeholder="เช่น ข้าว"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              />
+              <datalist id="exp-category-options">
+                {(summary?.byCategory ?? []).map((c) => (
+                  <option key={c.name} value={c.name} />
+                ))}
+              </datalist>
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="exp-note">
+              บันทึกเพิ่มเติม <span className="optional">(ไม่บังคับ)</span>
+            </label>
+            <input
+              id="exp-note"
+              type="text"
+              placeholder="เช่น ซื้อของเข้าบ้าน"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          {editingId ? (
+            <div className="field-row">
+              <button type="button" className="form-toggle" onClick={resetForm}>
+                ยกเลิก
+              </button>
+              <button type="submit" className="form-submit" disabled={saving}>
+                {saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+              </button>
+            </div>
+          ) : (
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึกรายจ่าย'}
+            </button>
+          )}
+        </form>
+      </div>
+
+      {!summary ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : (
+        <div className="dash-section">
+          <div className="dash-section-heading">📅 สรุปรายจ่ายเดือนนี้</div>
+          <div className="total">
+            เดือนนี้ใช้ไป <strong>{baht(summary.totalSatang)}</strong> บาท
+          </div>
+          <ul className="list">
+            {summary.byCategory.map((c) => (
+              <li key={c.name} className="category-row">
+                <div className="category-name">{c.name}</div>
+                <div className="bar-track">
+                  <div className="bar-fill" style={{ width: `${(c.amountSatang / max) * 100}%` }} />
+                </div>
+                <div className="category-amount">{baht(c.amountSatang)}</div>
+              </li>
+            ))}
+            {summary.byCategory.length === 0 && <p className="empty">ยังไม่มีรายจ่ายเดือนนี้ครับ</p>}
+          </ul>
+        </div>
+      )}
+
+      <div className="dash-section">
+        <div className="dash-section-heading">🧾 รายการเดือนนี้</div>
+        {!transactions ? (
+          <p className="loading">กำลังโหลด...</p>
+        ) : transactions.length === 0 ? (
+          <p className="empty">ยังไม่มีรายการเดือนนี้ครับ</p>
+        ) : (
+          <ul className="list">
+            {transactions.map((tx) => (
+              <li key={tx.id} className="finance-item finance-item-stacked">
+                <div className="finance-item-main">
+                  <span className="finance-icon">{tx.direction === 'IN' ? '📥' : '📤'}</span>
+                  <div>
+                    <div>
+                      {tx.categoryName ?? 'ไม่มีหมวด'}
+                      <span className={tx.direction === 'IN' ? 'amount-in' : 'amount-out'}>
+                        {' '}
+                        {tx.direction === 'IN' ? '+' : '−'}
+                        {baht(tx.amountSatang)}
+                      </span>
+                    </div>
+                    <div className="muted">
+                      {thaiDate(tx.occurredAt)}
+                      {tx.note ? ` · ${tx.note}` : ''}
+                      {tx.paidBy ? ` · ${tx.paidBy}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <RowActions
+                  onEdit={() => startEdit(tx)}
+                  onDelete={async () => {
+                    await api.deleteTransaction(tx.id);
+                    if (editingId === tx.id) resetForm();
+                    await load();
+                  }}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LoansSection() {
+  const [loans, setLoans] = useState<Loan[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [borrowerName, setBorrowerName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [note, setNote] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => api.loans().then((r) => setLoans(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setBorrowerName('');
+    setAmount('');
+    setDueDate('');
+    setNote('');
+  };
+
+  const startEdit = (loan: Loan) => {
+    setEditingId(loan.id);
+    setBorrowerName(loan.borrowerName);
+    setAmount(String(loan.principalSatang / 100));
+    setDueDate(loan.dueAt ? loan.dueAt.slice(0, 10) : '');
+    setNote(loan.note ?? '');
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const principalAmountBaht = Number(amount);
+    if (!borrowerName.trim() || !Number.isFinite(principalAmountBaht) || principalAmountBaht <= 0) return;
+
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.updateLoan(editingId, {
+          borrowerName: borrowerName.trim(),
+          principalAmountBaht,
+          dueAt: dueDate || null,
+          note: note.trim() || null,
+        });
+      } else {
+        await api.addLoan({
+          borrowerName: borrowerName.trim(),
+          principalAmountBaht,
+          ...(dueDate ? { dueAt: dueDate } : {}),
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const repayFull = async (loan: Loan) => {
+    const outstandingBaht = (loan.principalSatang - loan.repaidSatang) / 100;
+    if (outstandingBaht <= 0) return;
+    await api.repayLoan(loan.id, outstandingBaht).catch(() => undefined);
+    await load();
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">🤝 เงินให้ยืม</div>
+      {!loans ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : loans.length === 0 ? (
+        <p className="empty">ยังไม่มีเงินให้ใครยืมครับ</p>
+      ) : (
+        <ul className="list">
+          {loans.map((loan) => {
+            const outstanding = loan.principalSatang - loan.repaidSatang;
+            return (
+              <li key={loan.id} className="finance-item finance-item-stacked">
+                <div className="finance-item-row">
+                  <div className="finance-item-main">
+                    <span className="finance-icon">🤝</span>
+                    <div>
+                      <div>{loan.borrowerName}</div>
+                      {loan.dueAt && <div className="muted">ครบกำหนด {thaiDate(loan.dueAt)}</div>}
+                      {loan.note && <div className="muted">{loan.note}</div>}
+                    </div>
+                  </div>
+                  <div className={`pill ${outstanding <= 0 ? 'pill-muted' : 'pill-warn'}`}>
+                    {outstanding <= 0 ? '✓ คืนครบแล้ว' : `ค้าง ${baht(outstanding)}`}
+                  </div>
+                </div>
+                <RowActions
+                  {...(outstanding > 0
+                    ? { extra: { label: 'คืนครบแล้ว', onClick: () => repayFull(loan) } }
+                    : {})}
+                  onEdit={() => startEdit(loan)}
+                  onDelete={async () => {
+                    await api.deleteLoan(loan.id);
+                    if (editingId === loan.id) resetForm();
+                    await load();
+                  }}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <form className="entry-form" onSubmit={add}>
+        <div className="field">
+          <label htmlFor="loan-borrower">ให้ใครยืม</label>
+          <input
+            id="loan-borrower"
+            type="text"
+            placeholder="เช่น พี่เอ"
+            value={borrowerName}
+            onChange={(e) => setBorrowerName(e.target.value)}
+            required
+          />
+        </div>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="loan-amount">จำนวนเงิน (บาท)</label>
+            <input
+              id="loan-amount"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="เช่น 5000"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="loan-due">
+              ครบกำหนดคืน <span className="optional">(ไม่บังคับ)</span>
+            </label>
+            <input id="loan-due" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="loan-note">
+            หมายเหตุ <span className="optional">(ไม่บังคับ)</span>
+          </label>
+          <input
+            id="loan-note"
+            type="text"
+            placeholder="เช่น ยืมไปซ่อมรถ"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+        {editingId ? (
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={resetForm}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+            </button>
+          </div>
+        ) : (
+          <button type="submit" className="form-submit" disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'บันทึกเงินให้ยืม'}
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function AssetsSection() {
+  const [assets, setAssets] = useState<Asset[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState<(typeof ASSET_CATEGORIES)[number]>('OTHER');
+  const [value, setValue] = useState('');
+  const [acquiredAt, setAcquiredAt] = useState('');
+  const [note, setNote] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => api.assets().then((r) => setAssets(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setName('');
+    setValue('');
+    setAcquiredAt('');
+    setNote('');
+  };
+
+  const startEdit = (asset: Asset) => {
+    setEditingId(asset.id);
+    setName(asset.name);
+    setCategory(asset.category as (typeof ASSET_CATEGORIES)[number]);
+    setValue(String(asset.valueSatang / 100));
+    setNote(asset.note ?? '');
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const valueBaht = Number(value);
+    if (!name.trim() || !Number.isFinite(valueBaht) || valueBaht <= 0) return;
+
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.updateAsset(editingId, {
+          name: name.trim(),
+          category,
+          valueBaht,
+          ...(acquiredAt ? { acquiredAt } : {}),
+          note: note.trim() || null,
+        });
+      } else {
+        await api.addAsset({
+          name: name.trim(),
+          category,
+          valueBaht,
+          ...(acquiredAt ? { acquiredAt } : {}),
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">🏠 ทรัพย์สิน</div>
+      {!assets ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : assets.length === 0 ? (
+        <p className="empty">ยังไม่มีทรัพย์สินบันทึกไว้ครับ</p>
+      ) : (
+        <ul className="list">
+          {assets.map((asset) => (
+            <li key={asset.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">{assetCategoryIcon(asset.category)}</span>
+                  <div>
+                    <div>{asset.name}</div>
+                    <div className="muted">
+                      {assetCategoryLabel(asset.category)}
+                      {asset.note ? ` · ${asset.note}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div>{baht(asset.valueSatang)}</div>
+              </div>
+              <RowActions
+                onEdit={() => startEdit(asset)}
+                onDelete={async () => {
+                  await api.deleteAsset(asset.id);
+                  if (editingId === asset.id) resetForm();
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="entry-form" onSubmit={add}>
+        <div className="field">
+          <label htmlFor="asset-name">ชื่อทรัพย์สิน</label>
+          <input
+            id="asset-name"
+            type="text"
+            placeholder="เช่น บ้านสวน"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        </div>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="asset-category">ประเภท</label>
+            <select
+              id="asset-category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value as typeof category)}
+            >
+              {ASSET_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {assetCategoryLabel(c)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="asset-value">มูลค่า (บาท)</label>
+            <input
+              id="asset-value"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="เช่น 3000000"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="asset-acquired">
+            วันที่ได้มา <span className="optional">(ไม่บังคับ)</span>
+          </label>
+          <input
+            id="asset-acquired"
+            type="date"
+            value={acquiredAt}
+            onChange={(e) => setAcquiredAt(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="asset-note">
+            หมายเหตุ <span className="optional">(ไม่บังคับ)</span>
+          </label>
+          <input
+            id="asset-note"
+            type="text"
+            placeholder="เช่น ผ่อนหมดแล้ว"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+        {editingId ? (
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={resetForm}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+            </button>
+          </div>
+        ) : (
+          <button type="submit" className="form-submit" disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'บันทึกทรัพย์สิน'}
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function DepositsSection() {
+  const [deposits, setDeposits] = useState<Deposit[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [balance, setBalance] = useState('');
+  const [note, setNote] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = () =>
+    api.deposits().then((r) => setDeposits(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setName('');
+    setBalance('');
+    setNote('');
+  };
+
+  const startEdit = (deposit: Deposit) => {
+    setEditingId(deposit.id);
+    setName(deposit.name);
+    setBalance(String(deposit.balanceSatang / 100));
+    setNote(deposit.note ?? '');
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const balanceBaht = Number(balance);
+    if (!name.trim() || !Number.isFinite(balanceBaht) || balanceBaht < 0) return;
+
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.updateDeposit(editingId, {
+          name: name.trim(),
+          balanceBaht,
+          note: note.trim() || null,
+        });
+      } else {
+        await api.addDeposit({
+          name: name.trim(),
+          balanceBaht,
+          ...(note.trim() ? { note: note.trim() } : {}),
+        });
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">🏦 เงินฝาก</div>
+      {!deposits ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : deposits.length === 0 ? (
+        <p className="empty">ยังไม่มีบัญชีเงินฝากบันทึกไว้ครับ</p>
+      ) : (
+        <ul className="list">
+          {deposits.map((deposit) => (
+            <li key={deposit.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">🏦</span>
+                  <div>
+                    <div>{deposit.name}</div>
+                    {deposit.note && <div className="muted">{deposit.note}</div>}
+                  </div>
+                </div>
+                <div>{baht(deposit.balanceSatang)}</div>
+              </div>
+              <RowActions
+                onEdit={() => startEdit(deposit)}
+                onDelete={async () => {
+                  await api.deleteDeposit(deposit.id);
+                  if (editingId === deposit.id) resetForm();
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="entry-form" onSubmit={add}>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="deposit-name">ชื่อบัญชี</label>
+            <input
+              id="deposit-name"
+              type="text"
+              placeholder="เช่น ออมทรัพย์ SCB"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="deposit-balance">ยอดคงเหลือ (บาท)</label>
+            <input
+              id="deposit-balance"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="เช่น 50000"
+              value={balance}
+              onChange={(e) => setBalance(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="deposit-note">
+            หมายเหตุ <span className="optional">(ไม่บังคับ)</span>
+          </label>
+          <input
+            id="deposit-note"
+            type="text"
+            placeholder="เช่น บัญชีสำหรับค่าเทอมลูก"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+        {editingId ? (
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={resetForm}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+            </button>
+          </div>
+        ) : (
+          <button type="submit" className="form-submit" disabled={saving}>
+            {saving ? 'กำลังบันทึก...' : 'บันทึกบัญชีเงินฝาก'}
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function FinanceTab() {
+  return (
+    <div>
+      <LoansSection />
+      <AssetsSection />
+      <DepositsSection />
+    </div>
+  );
+}
+
+/** Expenses and net worth are both "เงิน" — one tab, two views. */
+function MoneyTab() {
+  const [view, setView] = useState<'flow' | 'worth'>('flow');
+
+  return (
+    <div>
+      <div className="segmented">
+        <button className={view === 'flow' ? 'active' : ''} onClick={() => setView('flow')}>
+          รายรับ-รายจ่าย
+        </button>
+        <button className={view === 'worth' ? 'active' : ''} onClick={() => setView('worth')}>
+          ทรัพย์สิน/หนี้สิน
+        </button>
+      </div>
+      {view === 'flow' ? <ExpensesTab /> : <FinanceTab />}
+    </div>
+  );
+}
+
+const TASK_COLUMNS = [
+  { status: 'TODO', label: 'ต้องทำ', className: 'board-column-todo', note: 'note-todo' },
+  { status: 'DOING', label: 'กำลังทำ', className: 'board-column-doing', note: 'note-doing' },
+  { status: 'DONE', label: 'เสร็จแล้ว', className: 'board-column-done', note: 'note-done' },
+] as const;
+
+/**
+ * The family board. Cards move by tapping a button rather than by dragging:
+ * drag-and-drop inside a LINE webview fights the page's own scrolling, and a
+ * card that will not drop where you meant is worse than one extra tap.
+ */
+function TasksTab({ timezone }: { timezone: string }) {
+  const [tasks, setTasks] = useState<TaskItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [title, setTitle] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [assignee, setAssignee] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+
+  const load = () => api.tasks().then((r) => setTasks(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+
+    setSaving(true);
+    try {
+      await api.addTask({
+        title: title.trim(),
+        ...(dueDate ? { dueAt: dueDate } : {}),
+        ...(assignee.trim() ? { assigneeName: assignee.trim() } : {}),
+      });
+      setTitle('');
+      setDueDate('');
+      setAssignee('');
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const move = async (task: TaskItem, status: TaskItem['status']) => {
+    // Optimistic: the card jumps columns on tap, which is the whole point.
+    setTasks((prev) => prev?.map((t) => (t.id === task.id ? { ...t, status } : t)) ?? null);
+    await api.updateTask(task.id, { status }).catch(() => undefined);
+    await load();
+  };
+
+  const remove = async (task: TaskItem) => {
+    setTasks((prev) => prev?.filter((t) => t.id !== task.id) ?? null);
+    await api.deleteTask(task.id).catch(() => undefined);
+    await load();
+  };
+
+  if (error) return <p className="error">{error}</p>;
+  if (!tasks) return <p className="loading">กำลังโหลด...</p>;
+
+  const todayKey = dayKey(new Date().toISOString(), timezone);
+  const open = tasks.filter((t) => t.status !== 'DONE').length;
+  const doneToday = tasks.filter(
+    (t) => t.status === 'DONE' && t.doneAt && dayKey(t.doneAt, timezone) === todayKey,
+  ).length;
+
+  return (
+    <div>
+      <div className="dash-section" style={{ textAlign: 'center' }}>
+        <div className="dash-section-heading">📋 บอร์ดงานของบ้าน</div>
+        <div className="muted">
+          {open === 0 ? 'ไม่มีงานค้างแล้ว เยี่ยมมากครับ' : `ค้างอยู่ ${open} งาน`}
+          {doneToday > 0 ? ` · วันนี้เสร็จไป ${doneToday}` : ''}
+        </div>
+      </div>
+
+      <div className="corkboard">
+        <div className="board-columns">
+          {TASK_COLUMNS.map((col) => {
+            const cards = tasks.filter((t) => t.status === col.status);
+            return (
+              <div key={col.status} className={`board-column ${col.className}`}>
+                <div className="board-column-head">
+                  {col.label}
+                  <span className="board-count">{cards.length}</span>
+                </div>
+
+                {cards.length === 0 && <div className="board-empty">ว่าง</div>}
+
+                {cards.map((task) => {
+                  const overdue =
+                    task.status !== 'DONE' && task.dueAt !== null && new Date(task.dueAt) < new Date();
+                  return (
+                    <div
+                      key={task.id}
+                      className={`note ${col.note}${overdue ? ' note-overdue' : ''}`}
+                    >
+                      <div className="note-title">{task.title}</div>
+                      {(task.assignee || task.dueAt) && (
+                        <div className="note-meta">
+                          {task.assignee ?? ''}
+                          {task.assignee && task.dueAt ? ' · ' : ''}
+                          {task.dueAt ? thaiDate(task.dueAt) : ''}
+                        </div>
+                      )}
+
+                      <div className="note-actions">
+                        {task.status === 'TODO' && (
+                          <button className="note-btn" onClick={() => move(task, 'DOING')}>
+                            เริ่ม
+                          </button>
+                        )}
+                        {task.status !== 'DONE' ? (
+                          <button className="note-btn" onClick={() => move(task, 'DONE')}>
+                            ✓
+                          </button>
+                        ) : (
+                          <button className="note-btn" onClick={() => move(task, 'TODO')}>
+                            ↩
+                          </button>
+                        )}
+                        <button className="note-btn" onClick={() => remove(task)}>
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+        <div className="board-footnote">งานเลยกำหนด = หมุดแดง</div>
+      </div>
+
+      <div className="dash-section" style={{ marginTop: 12 }}>
+        {showAdd ? (
+          <form className="entry-form" onSubmit={add} style={{ borderTop: 'none', paddingTop: 0 }}>
+            <div className="field">
+              <label htmlFor="task-title">งานอะไร</label>
+              <input
+                id="task-title"
+                type="text"
+                placeholder="เช่น โทรหาช่างแอร์"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="task-due">
+                  ครบกำหนด <span className="optional">(ไม่บังคับ)</span>
+                </label>
+                <input
+                  id="task-due"
+                  type="date"
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="task-assignee">
+                  ให้ใครทำ <span className="optional">(ไม่บังคับ)</span>
+                </label>
+                <input
+                  id="task-assignee"
+                  type="text"
+                  placeholder="เช่น พ่อ"
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="field-row">
+              <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+                ยกเลิก
+              </button>
+              <button type="submit" className="form-submit" disabled={saving}>
+                {saving ? 'กำลังบันทึก...' : 'ปักงานลงบอร์ด'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
+            ＋ เพิ่มงาน
+          </button>
+        )}
+      </div>
+
+      <div className="dash-section" style={{ textAlign: 'center' }}>
+        <Mascot who="girl" mood={open === 0 ? 'cheer' : 'happy'} size={110} />
+        <div className="muted">
+          {open === 0 ? 'บอร์ดโล่งแล้ว! 🎉' : 'พิมพ์ในแชทก็ได้นะ — "เพิ่มงาน ..."'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Standing items — bills, documents, medication, chores. These are all set up
+ * from chat, and until now the app had no way to see (let alone stop) one that
+ * was entered wrong, which is the whole reason this tab exists. Each empty
+ * state doubles as a reminder of the phrase that creates one.
+ */
+function ManageTab() {
+  return (
+    <div>
+      <BillsSection />
+      <DocumentsSection />
+      <MedicationsSection />
+      <ChoresSection />
+    </div>
+  );
+}
+
+function BillsSection() {
+  const [bills, setBills] = useState<BillItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => api.bills().then((r) => setBills(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">🧾 บิลประจำเดือน</div>
+      {!bills ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : bills.length === 0 ? (
+        <p className="empty">ยังไม่มีบิล — พิมพ์ "ตั้งบิล ค่าไฟ 800 ทุกวันที่ 5" ในแชทได้เลย</p>
+      ) : (
+        <ul className="list">
+          {bills.map((bill) => (
+            <li key={bill.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">🧾</span>
+                  <div>
+                    <div>{bill.name}</div>
+                    <div className="muted">
+                      ทุกวันที่ {bill.dueDay} ·{' '}
+                      {bill.amountSatang === null ? 'ยอดตามบิล' : `${baht(bill.amountSatang)} บาท`}
+                    </div>
+                  </div>
+                </div>
+                {!bill.active && <span className="pill pill-muted">ปิดอยู่</span>}
+              </div>
+              <RowActions
+                extra={{
+                  label: bill.active ? 'ปิดเตือน' : 'เปิดเตือน',
+                  onClick: async () => {
+                    await api.updateBill(bill.id, { active: !bill.active });
+                    await load();
+                  },
+                }}
+                onDelete={async () => {
+                  await api.deleteBill(bill.id);
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DocumentsSection() {
+  const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () =>
+    api.documents().then((r) => setDocuments(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">📄 เอกสารที่ต้องต่ออายุ</div>
+      {!documents ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : documents.length === 0 ? (
+        <p className="empty">ยังไม่มีเอกสาร — พิมพ์ "ใบขับขี่ หมดอายุ 15 มี.ค. 70" ในแชทได้เลย</p>
+      ) : (
+        <ul className="list">
+          {documents.map((doc) => (
+            <li key={doc.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">📄</span>
+                  <div>
+                    <div>{doc.name}</div>
+                    <div className="muted">
+                      {documentTypeLabel(doc.type)} · หมดอายุ {thaiDate(doc.expiresAt)}
+                      {doc.owner ? ` · ${doc.owner}` : ''}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <RowActions
+                onDelete={async () => {
+                  await api.deleteDocument(doc.id);
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function MedicationsSection() {
+  const [meds, setMeds] = useState<MedicationItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () =>
+    api.medications().then((r) => setMeds(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">💊 ยาประจำตัว</div>
+      {!meds ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : meds.length === 0 ? (
+        <p className="empty">ยังไม่มียา — พิมพ์ "ตั้งยา ยาความดัน เวลา 08:00, 20:00" ในแชทได้เลย</p>
+      ) : (
+        <ul className="list">
+          {meds.map((med) => (
+            <li key={med.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">💊</span>
+                  <div>
+                    <div>
+                      {med.name} <span className="muted">— {med.owner}</span>
+                    </div>
+                    <div className="muted">
+                      {med.times.join(', ')}
+                      {med.dosage ? ` · ${med.dosage}` : ''}
+                    </div>
+                  </div>
+                </div>
+                {!med.active && <span className="pill pill-muted">ปิดอยู่</span>}
+              </div>
+              <RowActions
+                extra={{
+                  label: med.active ? 'ปิดเตือน' : 'เปิดเตือน',
+                  onClick: async () => {
+                    await api.updateMedication(med.id, { active: !med.active });
+                    await load();
+                  },
+                }}
+                onDelete={async () => {
+                  await api.deleteMedication(med.id);
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ChoresSection() {
+  const [chores, setChores] = useState<ChoreItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => api.chores().then((r) => setChores(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-heading">🧹 งานบ้าน</div>
+      {!chores ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : chores.length === 0 ? (
+        <p className="empty">ยังไม่มีเวร — พิมพ์ "ตั้งเวร ล้างจาน ทุกวัน หมุนกับ แม่ พ่อ" ในแชทได้เลย</p>
+      ) : (
+        <ul className="list">
+          {chores.map((chore) => (
+            <li key={chore.id} className="finance-item finance-item-stacked">
+              <div className="finance-item-row">
+                <div className="finance-item-main">
+                  <span className="finance-icon">🧹</span>
+                  <div>
+                    <div>{chore.name}</div>
+                    <div className="muted">
+                      {cadenceLabel(chore.cadence)}
+                      {chore.nextAssignee ? ` · ตาของ ${chore.nextAssignee}` : ''}
+                    </div>
+                  </div>
+                </div>
+                {!chore.active && <span className="pill pill-muted">ปิดอยู่</span>}
+              </div>
+              <RowActions
+                extra={{
+                  label: chore.active ? 'ปิดเตือน' : 'เปิดเตือน',
+                  onClick: async () => {
+                    await api.updateChore(chore.id, { active: !chore.active });
+                    await load();
+                  },
+                }}
+                onDelete={async () => {
+                  await api.deleteChore(chore.id);
+                  await load();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ShoppingTab() {
+  const [items, setItems] = useState<ShoppingItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [newItem, setNewItem] = useState('');
+  const [newQty, setNewQty] = useState('');
+
+  const load = () => api.shopping().then((r) => setItems(r.items)).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newItem.trim();
+    if (!name) return;
+    const qty = newQty.trim();
+    setNewItem('');
+    setNewQty('');
+    await api.addShoppingItems([{ name, ...(qty ? { qty } : {}) }]);
+    await load();
+  };
+
+  const bought = async (id: string) => {
+    // Optimistic: the item disappears immediately, matching what tapping it means.
+    setItems((prev) => prev?.filter((i) => i.id !== id) ?? null);
+    await api.markBought(id).catch(() => load());
+  };
+
+  if (error) return <p className="error">{error}</p>;
+  if (!items) return <p className="loading">กำลังโหลด...</p>;
+
+  return (
+    <div>
+      <form className="quick-add" onSubmit={add}>
+        <input
+          type="text"
+          placeholder="เพิ่มของที่ต้องซื้อ"
+          value={newItem}
+          onChange={(e) => setNewItem(e.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="จำนวน (ไม่บังคับ)"
+          value={newQty}
+          onChange={(e) => setNewQty(e.target.value)}
+        />
+        <button type="submit">เพิ่ม</button>
+      </form>
+
+      {items.length === 0 ? (
+        <p className="empty">ไม่มีของที่ต้องซื้อครับ</p>
+      ) : (
+        <ul className="list">
+          {items.map((item) => (
+            <li key={item.id} className="shopping-item">
+              <span className="checkbox" onClick={() => bought(item.id)} />
+              <span className="shopping-text" onClick={() => bought(item.id)}>
+                {item.name}
+                {item.qty && <span className="muted"> · {item.qty}</span>}
+                {item.addedBy && <span className="muted"> — {item.addedBy}</span>}
+              </span>
+              <button
+                type="button"
+                className="row-btn shopping-remove"
+                aria-label="ลบรายการนี้"
+                onClick={async () => {
+                  // Distinct from ticking it off: this one was never wanted.
+                  setItems((prev) => prev?.filter((i) => i.id !== item.id) ?? null);
+                  await api.deleteShoppingItem(item.id).catch(() => load());
+                }}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

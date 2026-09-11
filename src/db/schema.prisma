@@ -1,0 +1,538 @@
+// FamilysManagement — schema
+//
+// Design note: event / bill / document / medication / chore all reduce to
+// "a thing with a due date that needs reminding". They each emit rows into
+// NotificationJob, which is the single queue ReminderEngine consumes.
+// Adding a new module (pets, car servicing, trips) means emitting jobs —
+// it never means touching the engine.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- core
+
+model Family {
+  id          String   @id @default(cuid())
+  lineGroupId String   @unique
+  timezone    String   @default("Asia/Bangkok")
+  createdAt   DateTime @default(now())
+
+  members       Member[]
+  events        Event[]
+  transactions  Transaction[]
+  categories    Category[]
+  budgets       Budget[]
+  bills         Bill[]
+  documents     Document[]
+  chores        Chore[]
+  shoppingItems ShoppingItem[]
+  jobs          NotificationJob[]
+  pushBudgets   PushBudget[]
+  loans         Loan[]
+  assets        Asset[]
+  deposits      Deposit[]
+  tasks         Task[]
+}
+
+enum MemberRole {
+  ADMIN
+  ADULT
+  CHILD
+  ELDER
+}
+
+model Member {
+  id          String     @id @default(cuid())
+  familyId    String
+  lineUserId  String
+  displayName String
+  role        MemberRole @default(ADULT)
+  birthDate   DateTime?  @db.Date
+
+  // Emergency card, surfaced from the Rich Menu. Never sent to any LLM.
+  bloodType  String?
+  allergies  String?
+  conditions String?
+
+  createdAt DateTime @default(now())
+
+  family        Family          @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  ownedEvents   Event[]         @relation("EventOwner")
+  attendances   EventAttendee[]
+  paidTx        Transaction[]   @relation("TxPayer")
+  splits        TxSplit[]
+  documents     Document[]
+  medications   Medication[]
+  shoppingAdded ShoppingItem[]
+  tasks         Task[]         @relation("TaskAssignee")
+
+  @@unique([familyId, lineUserId])
+  @@index([familyId])
+}
+
+// ---------------------------------------------------------------- events
+
+enum EventCategory {
+  MEDICAL // หมอ
+  SCHOOL // โรงเรียน
+  GOVERNMENT // ราชการ
+  SOCIAL // สังคม
+  WORK // งาน
+  OTHER // อื่นๆ
+}
+
+model Event {
+  id       String        @id @default(cuid())
+  familyId String
+  title    String
+  category EventCategory @default(OTHER)
+  startAt  DateTime
+  endAt    DateTime?
+  allDay   Boolean       @default(false)
+  location String?
+  ownerId  String?
+
+  /// RFC 5545 RRULE string for repeating appointments, null for one-offs.
+  rrule String?
+  note  String?
+
+  /// Minutes before startAt to remind. Default = 7 days / 1 day / 2 hours.
+  reminderOffsets Int[] @default([10080, 1440, 120])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  family    Family          @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  owner     Member?         @relation("EventOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  attendees EventAttendee[]
+
+  @@index([familyId, startAt])
+}
+
+model EventAttendee {
+  eventId  String
+  memberId String
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, memberId])
+}
+
+// ---------------------------------------------------------------- money
+
+enum TxDirection {
+  IN
+  OUT
+}
+
+model Category {
+  id       String      @id @default(cuid())
+  familyId String
+  name     String
+  kind     TxDirection @default(OUT)
+
+  family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  budgets      Budget[]
+
+  @@unique([familyId, name, kind])
+}
+
+model Transaction {
+  id       String      @id @default(cuid())
+  familyId String
+
+  /// Stored in satang (integer) to avoid float rounding on money.
+  amount     Int
+  direction  TxDirection
+  categoryId String?
+  paidById   String?
+  occurredAt DateTime
+  note       String?
+
+  /// LINE message id of the receipt/slip image, if it came from one.
+  receiptFileId String?
+  billId        String?
+
+  createdAt DateTime @default(now())
+
+  family   Family    @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  paidBy   Member?   @relation("TxPayer", fields: [paidById], references: [id], onDelete: SetNull)
+  bill     Bill?     @relation(fields: [billId], references: [id], onDelete: SetNull)
+  splits   TxSplit[]
+
+  @@index([familyId, occurredAt])
+}
+
+/// Shared cost tracking, e.g. one member fronting money for another.
+model TxSplit {
+  transactionId String
+  memberId      String
+
+  /// Share in satang. Sum of shares should equal Transaction.amount.
+  share Int
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  member      Member      @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@id([transactionId, memberId])
+}
+
+model Budget {
+  familyId   String
+  categoryId String
+
+  /// Format "2026-09".
+  yearMonth String
+
+  /// Satang.
+  limitAmount Int
+
+  /// Highest alert threshold (80 or 100) already sent this month, so
+  /// crossing 80% doesn't refire every subsequent transaction and 100%
+  /// doesn't re-alert once already sent at 80%.
+  alertedPercent Int @default(0)
+
+  family   Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([familyId, categoryId, yearMonth])
+}
+
+// ---------------------------------------------------------------- bills
+
+model Bill {
+  id       String @id @default(cuid())
+  familyId String
+  name     String
+
+  /// Satang. Null when the amount varies month to month (water, electricity).
+  amount Int?
+
+  /// Day of month the bill is due, 1-31 (clamped to month length).
+  dueDay Int
+
+  /// Create a Transaction automatically when marked paid.
+  autoCreateTx Boolean @default(true)
+  categoryId   String?
+  active       Boolean @default(true)
+
+  /// Default = 3 days / 1 day before due.
+  reminderOffsets Int[] @default([4320, 1440])
+
+  createdAt DateTime @default(now())
+
+  family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([familyId])
+}
+
+// ---------------------------------------------------------------- documents
+
+enum DocumentType {
+  ID_CARD // บัตรประชาชน
+  PASSPORT // พาสปอร์ต
+  DRIVER_LICENSE // ใบขับขี่
+  VEHICLE_TAX // พ.ร.บ. / ต่อทะเบียน
+  INSURANCE // ประกัน
+  VISA
+  OTHER
+}
+
+model Document {
+  id        String       @id @default(cuid())
+  familyId  String
+  name      String
+  type      DocumentType @default(OTHER)
+  expiresAt DateTime     @db.Date
+  ownerId   String?
+
+  /// LINE message id of the stored photo of the document.
+  fileId String?
+
+  /// Default = 60 / 30 / 7 days before expiry.
+  reminderOffsets Int[] @default([86400, 43200, 10080])
+
+  createdAt DateTime @default(now())
+
+  family Family  @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  owner  Member? @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([familyId, expiresAt])
+}
+
+// ---------------------------------------------------------------- health
+
+model Medication {
+  id       String  @id @default(cuid())
+  memberId String
+  name     String
+  dosage   String?
+
+  /// Local times of day in "HH:mm", e.g. ["08:00","20:00"].
+  times  String[]
+  active Boolean  @default(true)
+
+  /// Minutes to wait for a "taken" tap before escalating to the family.
+  escalateAfterMin Int @default(45)
+
+  member Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  logs   MedLog[]
+}
+
+model MedLog {
+  id           String    @id @default(cuid())
+  medicationId String
+  scheduledAt  DateTime
+  takenAt      DateTime?
+  escalatedAt  DateTime?
+
+  medication Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+
+  @@unique([medicationId, scheduledAt])
+}
+
+// ---------------------------------------------------------------- household
+
+enum ChoreCadence {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model Chore {
+  id       String       @id @default(cuid())
+  familyId String
+  name     String
+  cadence  ChoreCadence @default(WEEKLY)
+
+  /// Member ids in rotation order.
+  rotationMemberIds String[]
+
+  /// Index into rotationMemberIds for the next assignment.
+  rotationCursor Int @default(0)
+
+  /// Anchor for the reminder schedule. Advances by one cadence step each
+  /// time markChoreDone runs, which is what lets "done early" retire that
+  /// occurrence's reminder instead of it firing again on schedule.
+  nextDueAt DateTime
+
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+model ShoppingItem {
+  id        String    @id @default(cuid())
+  familyId  String
+  name      String
+  qty       String?
+  addedById String?
+  boughtAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  family  Family  @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  addedBy Member? @relation(fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@index([familyId, boughtAt])
+}
+
+// ---------------------------------------------------------------- tasks
+
+enum TaskStatus {
+  TODO
+  DOING
+  DONE
+}
+
+/// A loose to-do on the family board. Unlike Chore (which rotates on a
+/// cadence) a Task is a one-off that moves across three columns and stops.
+model Task {
+  id       String     @id @default(cuid())
+  familyId String
+  title    String
+  status   TaskStatus @default(TODO)
+
+  /// Null means "whoever picks it up".
+  assigneeId String?
+  dueAt      DateTime?
+  note       String?
+
+  /// Position within its column, so the board keeps the order people set.
+  sortOrder Int @default(0)
+
+  doneAt DateTime?
+
+  /// Only used when dueAt is set. Default = 1 day before.
+  reminderOffsets Int[] @default([1440])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  family   Family  @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  assignee Member? @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([familyId, status])
+}
+
+// ---------------------------------------------------------------- net worth
+
+enum AssetCategory {
+  PROPERTY // บ้าน/ที่ดิน
+  VEHICLE // รถ
+  ELECTRONICS
+  JEWELRY
+  INVESTMENT
+  OTHER
+}
+
+/// Money lent out to someone (family or not) — tracked to know what is owed
+/// back, distinct from tx_split which is only for splitting a shared cost.
+model Loan {
+  id           String @id @default(cuid())
+  familyId     String
+  borrowerName String
+
+  /// Satang.
+  principalSatang Int
+  /// Satang paid back so far. Outstanding = principalSatang - repaidSatang.
+  repaidSatang Int @default(0)
+
+  lentAt DateTime
+  dueAt  DateTime?
+  note   String?
+  active Boolean   @default(true)
+
+  /// Only used when dueAt is set. Default = 1 day before due.
+  reminderOffsets Int[] @default([1440])
+
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+/// Snapshot of current value, not a value-history ledger — a family logging
+/// what they own, not a full accounting system.
+model Asset {
+  id          String        @id @default(cuid())
+  familyId    String
+  name        String
+  category    AssetCategory @default(OTHER)
+  valueSatang Int
+  acquiredAt  DateTime?     @db.Date
+  note        String?
+  active      Boolean       @default(true)
+  updatedAt   DateTime      @updatedAt
+
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+/// Snapshot of a bank/savings account balance, adjusted directly rather than
+/// through a transaction ledger — same simplicity trade-off as Asset.
+model Deposit {
+  id            String  @id @default(cuid())
+  familyId      String
+  name          String
+  balanceSatang Int     @default(0)
+  note          String?
+  active        Boolean @default(true)
+  updatedAt     DateTime @updatedAt
+
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+// ---------------------------------------------------------------- reminders
+
+enum JobKind {
+  EVENT
+  BILL
+  DOCUMENT
+  MEDICATION
+  CHORE
+  BUDGET_ALERT
+  BIRTHDAY
+  MONTH_SUMMARY
+  LOAN_DUE
+  TASK
+}
+
+enum JobStatus {
+  PENDING
+  SENT
+  CANCELLED
+
+  /// Dropped because the push budget ran out — kept for visibility.
+  SKIPPED
+}
+
+enum JobLane {
+  /// Batched into the next 07:00 / 20:00 digest. The default.
+  DIGEST
+
+  /// Sent immediately, drawn from the reserved push budget.
+  URGENT
+}
+
+model NotificationJob {
+  id       String  @id @default(cuid())
+  familyId String
+  kind     JobKind
+
+  /// Id of the originating row (Event.id, Bill.id, ...).
+  refId String
+  dueAt DateTime
+  lane  JobLane   @default(DIGEST)
+
+  status JobStatus @default(PENDING)
+
+  /// Rendered summary line plus whatever the digest builder needs.
+  payload Json
+  sentAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  /// Idempotency: regenerating jobs for a row must not duplicate them.
+  @@unique([kind, refId, dueAt])
+  @@index([status, dueAt])
+  @@index([familyId, status, dueAt])
+}
+
+model PushBudget {
+  familyId String
+
+  /// Format "2026-09".
+  yearMonth String
+  used      Int    @default(0)
+
+  /// Last value read back from the LINE quota consumption endpoint.
+  lineReported Int?
+  reconciledAt DateTime?
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@id([familyId, yearMonth])
+}
