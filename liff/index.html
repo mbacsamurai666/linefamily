@@ -13,6 +13,9 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Served by the bot at runtime; 404s harmlessly under `vite dev`, where
+         the build-time VITE_LIFF_ID takes over instead. -->
+    <script src="./config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

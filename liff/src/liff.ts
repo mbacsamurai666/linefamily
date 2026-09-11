@@ -8,10 +8,30 @@ import liff from '@line/liff';
 
 let ready: Promise<void> | null = null;
 
+declare global {
+  interface Window {
+    /** Served at runtime by the bot itself — see /liff/config.js in line/app.ts. */
+    __LIFF_ID__?: string;
+  }
+}
+
+/**
+ * The id is read from the server at runtime first, and only falls back to the
+ * one Vite baked in at build time.
+ *
+ * Vite inlines import.meta.env at build time, so a deployed bundle built
+ * before the LIFF id existed — or built against a different channel — fails
+ * with no clue why. Serving it alongside the page means the bot and the page
+ * can never disagree about which LIFF app this is.
+ */
+function resolveLiffId(): string | undefined {
+  return window.__LIFF_ID__ || (import.meta.env.VITE_LIFF_ID as string | undefined);
+}
+
 export function initLiff(): Promise<void> {
-  const liffId = import.meta.env.VITE_LIFF_ID as string | undefined;
+  const liffId = resolveLiffId();
   if (!liffId) {
-    return Promise.reject(new Error('VITE_LIFF_ID is not set — see .env.example'));
+    return Promise.reject(new Error('ไม่พบ LIFF ID — ตั้ง LIFF_ID ที่เซิร์ฟเวอร์ หรือ VITE_LIFF_ID ตอน build'));
   }
   ready ??= liff.init({ liffId });
   return ready;

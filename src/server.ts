@@ -104,6 +104,7 @@ async function main(): Promise<void> {
     channelSecret: cfg.LINE_CHANNEL_SECRET,
     pendingDrafts: () => drafts.size,
     log,
+    ...(cfg.LIFF_ID ? { liffId: cfg.LIFF_ID } : {}),
     ...(cfg.LIFF_CHANNEL_ID
       ? {
           liffApi: {

@@ -17,6 +17,8 @@ export interface AppDeps extends WebhookDeps {
   processSynchronously?: boolean;
   /** Omit to run without the /api surface (webhook-only tests). */
   liffApi?: ApiDeps;
+  /** Handed to the LIFF page at runtime so a rebuild is never needed to change it. */
+  liffId?: string;
 }
 
 export function createApp(deps: AppDeps) {
@@ -27,6 +29,15 @@ export function createApp(deps: AppDeps) {
   if (deps.liffApi) {
     app.route('/api', createApiRouter(deps.liffApi));
   }
+
+  // The page asks the server which LIFF app it belongs to, rather than
+  // trusting whatever Vite inlined when the bundle was built. Registered
+  // before the static handler so it wins over any file of the same name.
+  app.get('/liff/config.js', (c) => {
+    c.header('content-type', 'application/javascript; charset=utf-8');
+    c.header('cache-control', 'no-store');
+    return c.body(`window.__LIFF_ID__ = ${JSON.stringify(deps.liffId ?? '')};`);
+  });
 
   // Served from the same process the plan calls for: no separate deploy for
   // the LIFF page. 404s harmlessly if `liff/dist` has not been built yet.
