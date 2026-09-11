@@ -16,7 +16,13 @@ import {
   deleteTransaction,
   updateTask,
 } from './records.js';
-import { markChoreDone, markMedicationTaken } from '../reminders/generate.js';
+import {
+  generateBirthdayJobs,
+  markBillPaid,
+  markChoreDone,
+  markMedicationTaken,
+} from '../reminders/generate.js';
+import { parseThaiDateTime } from '../thai/date.js';
 import { ASSET_CATEGORY_LABEL } from '../intent/assetTypes.js';
 import { formatThaiDate, formatThaiTime } from '../line/format.js';
 import { parseAmountToSatang, formatSatang } from '../thai/number.js';
@@ -57,6 +63,8 @@ const NET_WORTH_SUMMARY = /^(?:สรุปฐานะการเงิน|ท
 const UNDO_LAST = /^(?:ยกเลิกล่าสุด|ลบล่าสุด|ยกเลิกรายการล่าสุด)$/;
 const DELETE_BY_NAME = /^ลบ(นัด|บิล|เอกสาร|ยา|เวร|เงินกู้|ทรัพย์สิน|เงินฝาก|ของ|งาน)\s+(.+)$/;
 const CLOSE_TASK = /^(?:ปิดงาน|งานเสร็จ)\s+(.+)$/;
+const SET_BIRTHDAY = /^วันเกิด\s*(?:ของ)?\s*(.+?)\s+((?:\d{1,2}|[ก-๛]).+)$/;
+const PAY_BILL = /^(?:จ่ายบิลแล้ว|จ่ายบิล|บิลจ่ายแล้ว)\s+(.+)$/;
 const TASK_BOARD = /^(?:บอร์ดงาน|งานค้าง|สรุปงาน)$/;
 
 /** Returns null when the text does not match any direct command. */
@@ -96,6 +104,12 @@ export async function tryDirectCommand(
   if (closeTask) return handleCloseTask(ctx, (closeTask[1] as string).trim());
 
   if (TASK_BOARD.test(text)) return handleTaskBoard(ctx);
+
+  const birthday = text.match(SET_BIRTHDAY);
+  if (birthday) return handleSetBirthday(ctx, (birthday[1] as string).trim(), birthday[2] as string);
+
+  const payBill = text.match(PAY_BILL);
+  if (payBill) return handlePayBill(ctx, (payBill[1] as string).trim());
 
   const del = text.match(DELETE_BY_NAME);
   if (del) return handleDeleteByName(ctx, del[1] as DeletableDomain, (del[2] as string).trim());
@@ -403,6 +417,83 @@ async function handleUndoLast(ctx: CommandContext): Promise<CommandResult> {
       ? `🗑️ ยกเลิก${latest.label} แล้วครับ`
       : 'ยกเลิกไม่สำเร็จครับ ลองใหม่อีกครั้ง',
   };
+}
+
+/**
+ * "วันเกิด น้องพร 5 ม.ค. 60" — stores a birth date and schedules the next
+ * birthday. "ฉัน" means whoever typed it.
+ */
+async function handleSetBirthday(
+  ctx: CommandContext,
+  who: string,
+  dateText: string,
+): Promise<CommandResult> {
+  const self = who === 'ฉัน' || who === 'ผม' || who === 'หนู';
+  if (self && ctx.memberId === null) {
+    return { reply: 'พิมพ์ในกลุ่มด้วยบัญชี LINE ของตัวเองก่อนนะครับ ระบบจะได้รู้ว่าเป็นของใคร' };
+  }
+
+  const member = self
+    ? await ctx.prisma.member.findUnique({
+        where: { id: ctx.memberId as string },
+        select: { id: true, displayName: true },
+      })
+    : await ctx.prisma.member.findFirst({
+        where: { familyId: ctx.familyId, displayName: { contains: who } },
+        select: { id: true, displayName: true },
+      });
+
+  if (!member) return { reply: `ไม่พบสมาชิกชื่อ "${who}" ในบ้านครับ` };
+
+  const when = parseThaiDateTime(dateText, ctx.now);
+  if (!when) return { reply: 'อ่านวันที่ไม่ออกครับ ลองแบบ "วันเกิด น้องพร 5 ม.ค. 60"' };
+
+  // A birth date is a calendar date, not an instant — store it as the plain
+  // day so no timezone offset can move it.
+  const born = DateTime.fromObject(
+    { year: when.start.year, month: when.start.month, day: when.start.day },
+    { zone: 'utc' },
+  );
+
+  await ctx.prisma.member.update({
+    where: { id: member.id },
+    data: { birthDate: born.toJSDate() },
+  });
+  await generateBirthdayJobs(ctx.prisma, member.id, ctx.now);
+
+  return {
+    reply: `🎂 บันทึกวันเกิด ${member.displayName}: ${formatThaiDate(born)} แล้วครับ เดี๋ยวเตือนล่วงหน้า 1 วันให้`,
+  };
+}
+
+/**
+ * "จ่ายบิลแล้ว ค่าไฟ" — records the payment and clears this cycle's reminders.
+ * The bill itself stays: next month it comes back on schedule.
+ */
+async function handlePayBill(ctx: CommandContext, hint: string): Promise<CommandResult> {
+  const bills = await ctx.prisma.bill.findMany({
+    where: { familyId: ctx.familyId, active: true, name: { contains: hint } },
+    take: 5,
+  });
+
+  if (bills.length === 0) return { reply: `ไม่พบบิลชื่อ "${hint}" ครับ` };
+  if (bills.length > 1) {
+    return {
+      reply: `มีหลายบิลที่ตรงกับ "${hint}" ระบุให้ชัดขึ้นนะครับ\n${bills
+        .map((b) => `• ${b.name}`)
+        .join('\n')}`,
+    };
+  }
+
+  const bill = bills[0] as (typeof bills)[number];
+  const result = await markBillPaid(ctx.prisma, bill.id, ctx.now);
+  if (!result) return { reply: 'บันทึกไม่สำเร็จครับ ลองใหม่อีกครั้ง' };
+
+  const money = result.amountSatang
+    ? ` บันทึกรายจ่าย ${formatSatang(result.amountSatang)} บาทให้แล้ว`
+    : ' (บิลนี้ไม่ได้ตั้งยอดไว้ ถ้าจะบันทึกรายจ่ายพิมพ์ยอดมาได้เลย)';
+
+  return { reply: `✅ จ่ายบิล "${bill.name}" แล้ว${money}` };
 }
 
 /** "ปิดงาน ล้างรถ" — moves a board card straight to เสร็จแล้ว. */

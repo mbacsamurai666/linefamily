@@ -22,17 +22,20 @@ import { Mascot, moodForDay } from './Mascot.js';
 import {
   ASSET_CATEGORIES,
   EVENT_CATEGORIES,
+  REPEAT_OPTIONS,
   assetCategoryIcon,
   assetCategoryLabel,
   baht,
   cadenceLabel,
   clockHHmm,
   dayKey,
+  DOCUMENT_TYPES,
   documentTypeLabel,
   eventCategoryColor,
   eventCategoryLabel,
   kindLabel,
   minutesOfDay,
+  repeatLabel,
   thaiDate,
   thaiFullDate,
   thaiMonthYear,
@@ -600,6 +603,12 @@ function CalendarTab({ timezone }: CalendarTabProps) {
                             <span className="muted">เวลา</span>
                             <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
                           </div>
+                          {detail.rrule && (
+                            <div className="agenda-detail-row">
+                              <span className="muted">ทำซ้ำ</span>
+                              <span>{repeatLabel(detail.rrule)}</span>
+                            </div>
+                          )}
                           {detail.location && (
                             <div className="agenda-detail-row">
                               <span className="muted">สถานที่</span>
@@ -859,6 +868,12 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
                 <span className="muted">เวลา</span>
                 <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
               </div>
+              {detail.rrule && (
+                <div className="agenda-detail-row">
+                  <span className="muted">ทำซ้ำ</span>
+                  <span>{repeatLabel(detail.rrule)}</span>
+                </div>
+              )}
               {detail.location && (
                 <div className="agenda-detail-row">
                   <span className="muted">สถานที่</span>
@@ -932,6 +947,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [location, setLocation] = useState(existing?.location ?? '');
   const [attendeeName, setAttendeeName] = useState(existing?.attendeeNames[0] ?? '');
   const [note, setNote] = useState(existing?.note ?? '');
+  const [rrule, setRrule] = useState(existing?.rrule ?? '');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -955,6 +971,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           location: location.trim() || null,
           attendeeName: attendeeName.trim() || null,
           note: note.trim() || null,
+          rrule: rrule || null,
         });
       } else {
         await api.addEvent({
@@ -965,6 +982,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           ...(location.trim() ? { location: location.trim() } : {}),
           ...(attendeeName.trim() ? { attendeeName: attendeeName.trim() } : {}),
           ...(note.trim() ? { note: note.trim() } : {}),
+          ...(rrule ? { rrule } : {}),
         });
       }
       onAdded();
@@ -1017,6 +1035,22 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
             ))}
           </select>
         </div>
+      </div>
+
+      <div className="field">
+        <label htmlFor="event-repeat">ทำซ้ำ</label>
+        <select id="event-repeat" value={rrule} onChange={(e) => setRrule(e.target.value)}>
+          {REPEAT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+          {/* A rule typed in chat ("ทุกวันจันทร์") has no entry above — keep it
+              selectable so editing does not silently drop it. */}
+          {rrule && !REPEAT_OPTIONS.some((o) => o.value === rrule) && (
+            <option value={rrule}>{repeatLabel(rrule)}</option>
+          )}
+        </select>
       </div>
 
       <div className="field">
@@ -2042,11 +2076,41 @@ function ManageTab() {
 function BillsSection() {
   const [bills, setBills] = useState<BillItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [dueDay, setDueDay] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const load = () => api.bills().then((r) => setBills(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const day = Number(dueDay);
+    if (!name.trim() || !Number.isInteger(day) || day < 1 || day > 31) return;
+    const amountBaht = Number(amount);
+
+    setSaving(true);
+    try {
+      await api.addBill({
+        name: name.trim(),
+        dueDay: day,
+        ...(Number.isFinite(amountBaht) && amountBaht > 0 ? { amountBaht } : {}),
+      });
+      setName('');
+      setAmount('');
+      setDueDay('');
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (error) return <p className="error">{error}</p>;
 
@@ -2091,6 +2155,66 @@ function BillsSection() {
           ))}
         </ul>
       )}
+
+      {showAdd ? (
+        <form className="entry-form" onSubmit={add}>
+          <div className="field">
+            <label htmlFor="bill-name">ชื่อบิล</label>
+            <input
+              id="bill-name"
+              type="text"
+              placeholder="เช่น ค่าไฟ"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="bill-amount">
+                ยอด (บาท) <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input
+                id="bill-amount"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="ว่างไว้ถ้ายอดไม่คงที่"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="bill-dueday">ครบกำหนดทุกวันที่</label>
+              <input
+                id="bill-dueday"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max="31"
+                placeholder="1-31"
+                value={dueDay}
+                onChange={(e) => setDueDay(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'ตั้งบิล'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
+          ＋ ตั้งบิลใหม่
+        </button>
+      )}
     </div>
   );
 }
@@ -2098,12 +2222,36 @@ function BillsSection() {
 function DocumentsSection() {
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState('');
+  const [type, setType] = useState('OTHER');
+  const [expiresAt, setExpiresAt] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const load = () =>
     api.documents().then((r) => setDocuments(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !expiresAt) return;
+
+    setSaving(true);
+    try {
+      await api.addDocument({ name: name.trim(), type, expiresAt });
+      setName('');
+      setExpiresAt('');
+      setType('OTHER');
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (error) return <p className="error">{error}</p>;
 
@@ -2140,6 +2288,57 @@ function DocumentsSection() {
           ))}
         </ul>
       )}
+
+      {showAdd ? (
+        <form className="entry-form" onSubmit={add}>
+          <div className="field">
+            <label htmlFor="doc-name">ชื่อเอกสาร</label>
+            <input
+              id="doc-name"
+              type="text"
+              placeholder="เช่น ใบขับขี่แม่"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="doc-type">ประเภท</label>
+              <select id="doc-type" value={type} onChange={(e) => setType(e.target.value)}>
+                {DOCUMENT_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {documentTypeLabel(t)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="doc-expires">วันหมดอายุ</label>
+              <input
+                id="doc-expires"
+                type="date"
+                value={expiresAt}
+                onChange={(e) => setExpiresAt(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึกเอกสาร'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
+          ＋ เพิ่มเอกสาร
+        </button>
+      )}
     </div>
   );
 }
@@ -2147,12 +2346,47 @@ function DocumentsSection() {
 function MedicationsSection() {
   const [meds, setMeds] = useState<MedicationItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState('');
+  const [dosage, setDosage] = useState('');
+  const [times, setTimes] = useState('08:00, 20:00');
+  const [saving, setSaving] = useState(false);
 
   const load = () =>
     api.medications().then((r) => setMeds(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedTimes = times
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+    if (!name.trim() || parsedTimes.length === 0) {
+      setError('ใส่เวลาแบบ 08:00 อย่างน้อยหนึ่งเวลานะครับ');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await api.addMedication({
+        name: name.trim(),
+        times: parsedTimes,
+        ...(dosage.trim() ? { dosage: dosage.trim() } : {}),
+      });
+      setName('');
+      setDosage('');
+      setTimes('08:00, 20:00');
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (error) return <p className="error">{error}</p>;
 
@@ -2199,6 +2433,61 @@ function MedicationsSection() {
           ))}
         </ul>
       )}
+
+      {showAdd ? (
+        <form className="entry-form" onSubmit={add}>
+          <div className="field">
+            <label htmlFor="med-name">ชื่อยา</label>
+            <input
+              id="med-name"
+              type="text"
+              placeholder="เช่น ยาความดัน"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="med-times">เวลา</label>
+              <input
+                id="med-times"
+                type="text"
+                placeholder="08:00, 20:00"
+                value={times}
+                onChange={(e) => setTimes(e.target.value)}
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="med-dosage">
+                ขนาด <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input
+                id="med-dosage"
+                type="text"
+                placeholder="เช่น 1 เม็ด"
+                value={dosage}
+                onChange={(e) => setDosage(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'ตั้งเตือนยา'}
+            </button>
+          </div>
+          <div className="muted">ยาจะบันทึกเป็นของคนที่เปิดแอปอยู่ตอนนี้</div>
+        </form>
+      ) : (
+        <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
+          ＋ เพิ่มยา
+        </button>
+      )}
     </div>
   );
 }
@@ -2206,11 +2495,39 @@ function MedicationsSection() {
 function ChoresSection() {
   const [chores, setChores] = useState<ChoreItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState('');
+  const [cadence, setCadence] = useState('WEEKLY');
+  const [rotation, setRotation] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const load = () => api.chores().then((r) => setChores(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    const rotationNames = rotation
+      .split(/[,\s]+/)
+      .map((n) => n.trim())
+      .filter(Boolean);
+
+    setSaving(true);
+    try {
+      await api.addChore({ name: name.trim(), cadence, rotationNames });
+      setName('');
+      setRotation('');
+      setShowAdd(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (error) return <p className="error">{error}</p>;
 
@@ -2254,6 +2571,63 @@ function ChoresSection() {
             </li>
           ))}
         </ul>
+      )}
+
+      {showAdd ? (
+        <form className="entry-form" onSubmit={add}>
+          <div className="field">
+            <label htmlFor="chore-name">งานบ้าน</label>
+            <input
+              id="chore-name"
+              type="text"
+              placeholder="เช่น ล้างจาน"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="chore-cadence">ความถี่</label>
+              <select
+                id="chore-cadence"
+                value={cadence}
+                onChange={(e) => setCadence(e.target.value)}
+              >
+                {['DAILY', 'WEEKLY', 'MONTHLY'].map((c) => (
+                  <option key={c} value={c}>
+                    {cadenceLabel(c)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="chore-rotation">
+                หมุนเวรกับ <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input
+                id="chore-rotation"
+                type="text"
+                placeholder="แม่ พ่อ พี่เอ"
+                value={rotation}
+                onChange={(e) => setRotation(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setShowAdd(false)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'ตั้งเวร'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
+          ＋ เพิ่มงานบ้าน
+        </button>
       )}
     </div>
   );

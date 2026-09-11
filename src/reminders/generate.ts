@@ -1,9 +1,16 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
+// rrule ships CommonJS, so Node's ESM loader cannot see its named exports —
+// a named import typechecks and then throws at boot. The default import is
+// the whole module.exports.
+import rrulePkg from 'rrule';
+
+const { rrulestr } = rrulePkg;
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
 import { formatRelativeDay, formatThaiDateTime } from '../line/format.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import { formatSatang } from '../thai/number.js';
+import { recurrenceLabel } from '../thai/recurrence.js';
 
 /**
  * Job generation. Every module that owns something with a due date calls in
@@ -23,7 +30,8 @@ async function replaceJobs(
     | 'CHORE'
     | 'MONTH_SUMMARY'
     | 'LOAN_DUE'
-    | 'TASK',
+    | 'TASK'
+    | 'BIRTHDAY',
   refId: string,
   jobs: Array<{ familyId: string; dueAt: Date; lane?: 'DIGEST' | 'URGENT'; text: string }>,
 ): Promise<void> {
@@ -93,31 +101,71 @@ export async function generateEventJobs(
     })
   )?.timezone ?? 'Asia/Bangkok';
 
-  const startAt = DateTime.fromJSDate(event.startAt, { zone });
   const label = CATEGORY_LABEL[event.category as EventCategory];
   // Who the reminder names: for a school event this is the child it's about,
   // which matters more to the reader than who happened to type it in.
   const attendeeNames = event.attendees.map((a) => a.member.displayName);
   const who = attendeeNames.length > 0 ? attendeeNames.join(', ') : event.owner?.displayName;
+  const repeat = event.rrule ? ` · ${recurrenceLabel(event.rrule)}` : '';
 
-  const jobs = futureOnly(
-    event.reminderOffsets.map((min) => startAt.minus({ minutes: min })),
-    now,
-  ).map((dueAt) => ({
-    familyId: event.familyId,
-    dueAt: dueAt.toJSDate(),
-    text: [
-      `[${label}] ${event.title}`,
-      formatThaiDateTime(startAt, event.allDay),
-      `(${formatRelativeDay(startAt, dueAt)})`,
-      who ? `— ${who}` : '',
-      event.location ? `@ ${event.location}` : '',
-    ]
-      .filter(Boolean)
-      .join(' '),
-  }));
+  const jobs: Array<{ familyId: string; dueAt: Date; text: string }> = [];
+
+  for (const startAt of eventOccurrences(event.startAt, event.rrule, zone, now)) {
+    for (const dueAt of futureOnly(
+      event.reminderOffsets.map((min) => startAt.minus({ minutes: min })),
+      now,
+    )) {
+      jobs.push({
+        familyId: event.familyId,
+        dueAt: dueAt.toJSDate(),
+        text: [
+          `[${label}] ${event.title}`,
+          formatThaiDateTime(startAt, event.allDay),
+          `(${formatRelativeDay(startAt, dueAt)})`,
+          who ? `— ${who}` : '',
+          event.location ? `@ ${event.location}` : '',
+          repeat,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      });
+    }
+  }
 
   await replaceJobs(prisma, 'EVENT', eventId, jobs);
+}
+
+/** How far ahead a repeating appointment is scheduled, and how many at once. */
+const REPEAT_WINDOW_DAYS = 90;
+const REPEAT_MAX_OCCURRENCES = 4;
+
+/**
+ * A one-off is its own single occurrence; a repeating event is expanded from
+ * its RRULE. Only a few are scheduled at a time — the rest are picked up by
+ * the daily refresh (see refreshRecurring), which keeps the job table from
+ * filling with reminders for months nobody has reached yet.
+ *
+ * Thailand has no daylight saving, so carrying the UTC instant forward keeps
+ * every occurrence at the same local clock time.
+ */
+function eventOccurrences(
+  startAt: Date,
+  rrule: string | null,
+  zone: string,
+  now: DateTime,
+): DateTime[] {
+  if (!rrule) return [DateTime.fromJSDate(startAt, { zone })];
+
+  try {
+    const rule = rrulestr(`RRULE:${rrule}`, { dtstart: startAt });
+    return rule
+      .between(now.toJSDate(), now.plus({ days: REPEAT_WINDOW_DAYS }).toJSDate(), true)
+      .slice(0, REPEAT_MAX_OCCURRENCES)
+      .map((d) => DateTime.fromJSDate(d, { zone }));
+  } catch {
+    // A malformed rule must not take the appointment down with it.
+    return [DateTime.fromJSDate(startAt, { zone })];
+  }
 }
 
 export async function generateBillJobs(
@@ -164,6 +212,74 @@ export async function generateBillJobs(
   await replaceJobs(prisma, 'BILL', billId, jobs);
 }
 
+export interface BillPaidResult {
+  /** Satang actually recorded as an expense, or null when the bill has no set amount. */
+  amountSatang: number | null;
+}
+
+/**
+ * "จ่ายบิลแล้ว" — books the expense (that is what Bill.autoCreateTx is for)
+ * and retires only this cycle's reminders. The bill itself stays active, so
+ * next month's reminders are untouched.
+ */
+export async function markBillPaid(
+  prisma: PrismaClient,
+  billId: string,
+  now: DateTime,
+): Promise<BillPaidResult | null> {
+  const bill = await prisma.bill.findUnique({ where: { id: billId } });
+  if (!bill) return null;
+
+  const zone = (
+    await prisma.family.findUnique({ where: { id: bill.familyId }, select: { timezone: true } })
+  )?.timezone ?? 'Asia/Bangkok';
+
+  const local = now.setZone(zone);
+  let due = local.set({
+    day: Math.min(bill.dueDay, local.daysInMonth ?? 28),
+    hour: 9,
+    minute: 0,
+    second: 0,
+    millisecond: 0,
+  });
+  // Paying after this month's date settles the cycle that is already running,
+  // not the one that has not come round yet.
+  if (due < local.minus({ days: 7 })) {
+    const next = local.plus({ months: 1 });
+    due = next.set({ day: Math.min(bill.dueDay, next.daysInMonth ?? 28), hour: 9 });
+  }
+
+  let amountSatang: number | null = null;
+  if (bill.autoCreateTx && bill.amount !== null) {
+    await prisma.transaction.create({
+      data: {
+        familyId: bill.familyId,
+        amount: bill.amount,
+        direction: 'OUT',
+        occurredAt: now.toJSDate(),
+        billId: bill.id,
+        note: bill.name,
+        ...(bill.categoryId !== null ? { categoryId: bill.categoryId } : {}),
+      },
+    });
+    amountSatang = bill.amount;
+
+    try {
+      if (bill.categoryId) await checkBudgetAlert(prisma, bill.familyId, bill.categoryId, now);
+      await generateMonthSummaryJob(prisma, bill.familyId, now);
+    } catch {
+      // Reporting must not fail a payment that was already recorded.
+    }
+  }
+
+  await prisma.notificationJob.updateMany({
+    where: { kind: 'BILL', refId: billId, status: 'PENDING', dueAt: { lte: due.toJSDate() } },
+    data: { status: 'CANCELLED' },
+  });
+
+  return { amountSatang };
+}
+
 export async function generateDocumentJobs(
   prisma: PrismaClient,
   documentId: string,
@@ -195,6 +311,72 @@ export async function generateDocumentJobs(
   }));
 
   await replaceJobs(prisma, 'DOCUMENT', documentId, jobs);
+}
+
+/**
+ * Birthdays repeat forever, so only the next one is ever scheduled; the daily
+ * refresh rolls it to next year once it has passed. refId is the member, so a
+ * corrected birth date replaces the old reminder instead of adding to it.
+ */
+export async function generateBirthdayJobs(
+  prisma: PrismaClient,
+  memberId: string,
+  now: DateTime,
+): Promise<void> {
+  const member = await prisma.member.findUnique({
+    where: { id: memberId },
+    select: { id: true, familyId: true, displayName: true, birthDate: true },
+  });
+  if (!member) return;
+  if (!member.birthDate) return replaceJobs(prisma, 'BIRTHDAY', memberId, []);
+
+  const zone = (
+    await prisma.family.findUnique({
+      where: { id: member.familyId },
+      select: { timezone: true },
+    })
+  )?.timezone ?? 'Asia/Bangkok';
+
+  // The stored value is a date-only column, so read it in UTC and rebuild the
+  // day in the family's zone rather than letting an offset shift it.
+  const born = DateTime.fromJSDate(member.birthDate, { zone: 'utc' });
+  const today = now.setZone(zone).startOf('day');
+
+  let next = today.set({ month: born.month, day: born.day, hour: 8, minute: 0, second: 0, millisecond: 0 });
+  if (next < now) next = next.plus({ years: 1 });
+
+  const turning = next.year - born.year;
+
+  await replaceJobs(prisma, 'BIRTHDAY', memberId, [
+    {
+      familyId: member.familyId,
+      dueAt: next.minus({ days: 1 }).toJSDate(),
+      text: `🎂 พรุ่งนี้วันเกิด ${member.displayName}${turning > 0 ? ` ครบ ${turning} ปี` : ''}`,
+    },
+    {
+      familyId: member.familyId,
+      dueAt: next.toJSDate(),
+      text: `🎂 วันนี้วันเกิด ${member.displayName}${turning > 0 ? ` ครบ ${turning} ปี` : ''} — อย่าลืมอวยพรนะครับ`,
+    },
+  ]);
+}
+
+/**
+ * Everything that repeats is only ever scheduled a little way ahead, so
+ * something has to walk it forward. Called once a day from the server.
+ */
+export async function refreshRecurring(prisma: PrismaClient, now: DateTime): Promise<void> {
+  const [members, events] = await Promise.all([
+    prisma.member.findMany({ where: { birthDate: { not: null } }, select: { id: true } }),
+    prisma.event.findMany({ where: { rrule: { not: null } }, select: { id: true } }),
+  ]);
+
+  for (const member of members) {
+    await generateBirthdayJobs(prisma, member.id, now);
+  }
+  for (const event of events) {
+    await generateEventJobs(prisma, event.id, now);
+  }
 }
 
 /**

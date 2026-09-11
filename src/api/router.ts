@@ -106,6 +106,16 @@ const shoppingBody = z.object({
     .min(1),
 });
 
+const documentType = z.enum([
+  'ID_CARD',
+  'PASSPORT',
+  'DRIVER_LICENSE',
+  'VEHICLE_TAX',
+  'INSURANCE',
+  'VISA',
+  'OTHER',
+]);
+
 const eventCategory = z.enum(['MEDICAL', 'SCHOOL', 'GOVERNMENT', 'SOCIAL', 'WORK', 'OTHER']);
 
 const eventBody = z.object({
@@ -117,6 +127,32 @@ const eventBody = z.object({
   location: z.string().optional(),
   note: z.string().optional(),
   attendeeName: z.string().optional(),
+  /** RRULE body, e.g. "FREQ=WEEKLY;BYDAY=MO". Empty means it happens once. */
+  rrule: z.string().optional(),
+});
+
+const billBody = z.object({
+  name: z.string().min(1),
+  amountBaht: z.number().positive().optional(),
+  dueDay: z.number().int().min(1).max(31),
+});
+
+const documentBody = z.object({
+  name: z.string().min(1),
+  type: documentType.default('OTHER'),
+  expiresAt: z.string(),
+});
+
+const medicationBody = z.object({
+  name: z.string().min(1),
+  dosage: z.string().optional(),
+  times: z.array(z.string().regex(/^\d{1,2}:\d{2}$/)).min(1),
+});
+
+const choreBody = z.object({
+  name: z.string().min(1),
+  cadence: z.enum(['DAILY', 'WEEKLY', 'MONTHLY']),
+  rotationNames: z.array(z.string().min(1)).default([]),
 });
 
 const assetCategory = z.enum(['PROPERTY', 'VEHICLE', 'ELECTRONICS', 'JEWELRY', 'INVESTMENT', 'OTHER']);
@@ -150,16 +186,6 @@ const depositBody = z.object({
 
 const depositAdjustBody = z.object({ amountBaht: z.number() });
 
-const documentType = z.enum([
-  'ID_CARD',
-  'PASSPORT',
-  'DRIVER_LICENSE',
-  'VEHICLE_TAX',
-  'INSURANCE',
-  'VISA',
-  'OTHER',
-]);
-
 const eventPatchBody = z.object({
   title: z.string().min(1).optional(),
   startAt: z.string().optional(),
@@ -168,6 +194,8 @@ const eventPatchBody = z.object({
   location: z.string().nullable().optional(),
   note: z.string().nullable().optional(),
   attendeeName: z.string().nullable().optional(),
+  /** Empty string clears the repeat. */
+  rrule: z.string().nullable().optional(),
 });
 
 const transactionPatchBody = z.object({
@@ -351,6 +379,7 @@ export function createApiRouter(deps: ApiDeps) {
       allDay: event.allDay,
       location: event.location,
       note: event.note,
+      rrule: event.rrule,
       attendeeNames: event.attendees.map((a) => a.member.displayName),
     });
   });
@@ -374,6 +403,7 @@ export function createApiRouter(deps: ApiDeps) {
         ...(parsed.data.location !== undefined ? { location: parsed.data.location } : {}),
         ...(parsed.data.note !== undefined ? { note: parsed.data.note } : {}),
         ...(parsed.data.attendeeName !== undefined ? { attendeeName: parsed.data.attendeeName } : {}),
+        ...(parsed.data.rrule ? { rrule: parsed.data.rrule } : {}),
       },
       { prisma: deps.prisma, familyId: member.familyId, memberId: member.memberId, now },
     );
@@ -734,6 +764,27 @@ export function createApiRouter(deps: ApiDeps) {
     });
   });
 
+  app.post('/bills', async (c) => {
+    const member = c.get('member');
+    const parsed = billBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const now = DateTime.now().setZone(member.timezone);
+    const result = await persistDraft(
+      {
+        kind: 'bill',
+        name: parsed.data.name,
+        dueDay: parsed.data.dueDay,
+        ...(parsed.data.amountBaht !== undefined
+          ? { amount: Math.round(parsed.data.amountBaht * 100) }
+          : {}),
+      },
+      { prisma: deps.prisma, familyId: member.familyId, memberId: member.memberId, now },
+    );
+
+    return c.json(result, 201);
+  });
+
   app.patch('/bills/:id', async (c) => {
     const parsed = billPatchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -770,6 +821,23 @@ export function createApiRouter(deps: ApiDeps) {
         owner: d.owner?.displayName ?? null,
       })),
     });
+  });
+
+  app.post('/documents', async (c) => {
+    const member = c.get('member');
+    const parsed = documentBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const expiresAt = DateTime.fromISO(parsed.data.expiresAt, { zone: member.timezone });
+    if (!expiresAt.isValid) return c.json({ error: 'invalid expiresAt' }, 400);
+
+    const now = DateTime.now().setZone(member.timezone);
+    const result = await persistDraft(
+      { kind: 'document', name: parsed.data.name, type: parsed.data.type, expiresAt },
+      { prisma: deps.prisma, familyId: member.familyId, memberId: member.memberId, now },
+    );
+
+    return c.json(result, 201);
   });
 
   app.patch('/documents/:id', async (c) => {
@@ -813,6 +881,25 @@ export function createApiRouter(deps: ApiDeps) {
         owner: m.member.displayName,
       })),
     });
+  });
+
+  app.post('/medications', async (c) => {
+    const member = c.get('member');
+    const parsed = medicationBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const now = DateTime.now().setZone(member.timezone);
+    const result = await persistDraft(
+      {
+        kind: 'med',
+        name: parsed.data.name,
+        times: parsed.data.times,
+        ...(parsed.data.dosage !== undefined ? { dosage: parsed.data.dosage } : {}),
+      },
+      { prisma: deps.prisma, familyId: member.familyId, memberId: member.memberId, now },
+    );
+
+    return c.json(result, 201);
   });
 
   app.patch('/medications/:id', async (c) => {
@@ -863,6 +950,25 @@ export function createApiRouter(deps: ApiDeps) {
             : null,
       })),
     });
+  });
+
+  app.post('/chores', async (c) => {
+    const member = c.get('member');
+    const parsed = choreBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const now = DateTime.now().setZone(member.timezone);
+    const result = await persistDraft(
+      {
+        kind: 'chore',
+        name: parsed.data.name,
+        cadence: parsed.data.cadence,
+        rotationNames: parsed.data.rotationNames,
+      },
+      { prisma: deps.prisma, familyId: member.familyId, memberId: member.memberId, now },
+    );
+
+    return c.json(result, 201);
   });
 
   app.patch('/chores/:id', async (c) => {

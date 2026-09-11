@@ -58,6 +58,7 @@ export interface EventDetail {
   location: string | null;
   note: string | null;
   attendeeNames: string[];
+  rrule?: string | null;
 }
 
 export interface ExpenseSummary {
@@ -215,6 +216,7 @@ export const api = {
     location?: string;
     note?: string;
     attendeeName?: string;
+    rrule?: string;
   }) => request('/events', { method: 'POST', body: JSON.stringify(body) }),
   dashboard: () => request<DashboardData>('/dashboard'),
   loans: () => request<{ items: Loan[] }>('/loans'),
@@ -250,6 +252,7 @@ export const api = {
       location?: string | null;
       note?: string | null;
       attendeeName?: string | null;
+      rrule?: string | null;
     },
   ) => request(`/events/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteEvent: (id: string) => request(`/events/${id}`, { method: 'DELETE' }),
@@ -269,6 +272,8 @@ export const api = {
   deleteTransaction: (id: string) => request(`/transactions/${id}`, { method: 'DELETE' }),
 
   bills: () => request<{ items: BillItem[] }>('/bills'),
+  addBill: (body: { name: string; amountBaht?: number; dueDay: number }) =>
+    request('/bills', { method: 'POST', body: JSON.stringify(body) }),
   updateBill: (
     id: string,
     body: { name?: string; amountBaht?: number | null; dueDay?: number; active?: boolean },
@@ -276,11 +281,15 @@ export const api = {
   deleteBill: (id: string) => request(`/bills/${id}`, { method: 'DELETE' }),
 
   documents: () => request<{ items: DocumentItem[] }>('/documents'),
+  addDocument: (body: { name: string; type: string; expiresAt: string }) =>
+    request('/documents', { method: 'POST', body: JSON.stringify(body) }),
   updateDocument: (id: string, body: { name?: string; type?: string; expiresAt?: string }) =>
     request(`/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteDocument: (id: string) => request(`/documents/${id}`, { method: 'DELETE' }),
 
   medications: () => request<{ items: MedicationItem[] }>('/medications'),
+  addMedication: (body: { name: string; dosage?: string; times: string[] }) =>
+    request('/medications', { method: 'POST', body: JSON.stringify(body) }),
   updateMedication: (
     id: string,
     body: { name?: string; dosage?: string | null; times?: string[]; active?: boolean },
@@ -288,6 +297,8 @@ export const api = {
   deleteMedication: (id: string) => request(`/medications/${id}`, { method: 'DELETE' }),
 
   chores: () => request<{ items: ChoreItem[] }>('/chores'),
+  addChore: (body: { name: string; cadence: string; rotationNames?: string[] }) =>
+    request('/chores', { method: 'POST', body: JSON.stringify(body) }),
   updateChore: (id: string, body: { name?: string; cadence?: string; active?: boolean }) =>
     request(`/chores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteChore: (id: string) => request(`/chores/${id}`, { method: 'DELETE' }),

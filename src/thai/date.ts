@@ -1,4 +1,5 @@
 import { DateTime } from 'luxon';
+import { nextBusinessDay } from './holidays.js';
 import { normalizeThaiDigits, parseThaiNumber } from './number.js';
 
 /**
@@ -251,6 +252,8 @@ function matchDate(text: string, now: DateTime): DateMatch | null {
   }
 
   const relatives: Array<[RegExp, () => DateTime]> = [
+    // Before "วันนี้", or "วันทำการถัดไป" would match on its "วัน".
+    [/วัน(?:ทำการ|เปิดทำการ)(?:ถัดไป|หน้า)/, () => nextBusinessDay(today)],
     [/วันนี้/, () => today],
     [/พรุ่งนี้/, () => today.plus({ days: 1 })],
     [/มะรืน(?:นี้)?/, () => today.plus({ days: 2 })],

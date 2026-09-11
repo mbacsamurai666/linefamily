@@ -153,6 +153,8 @@ export function documentTypeLabel(type: string): string {
   return DOCUMENT_TYPE_LABEL[type] ?? type;
 }
 
+export const DOCUMENT_TYPES = Object.keys(DOCUMENT_TYPE_LABEL);
+
 const CADENCE_LABEL: Record<string, string> = {
   DAILY: 'ทุกวัน',
   WEEKLY: 'ทุกสัปดาห์',
@@ -161,6 +163,33 @@ const CADENCE_LABEL: Record<string, string> = {
 
 export function cadenceLabel(cadence: string): string {
   return CADENCE_LABEL[cadence] ?? cadence;
+}
+
+/** The repeats the picker offers — the same RRULEs the chat parser produces. */
+export const REPEAT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'ไม่ซ้ำ' },
+  { value: 'FREQ=DAILY', label: 'ทุกวัน' },
+  { value: 'FREQ=WEEKLY', label: 'ทุกสัปดาห์' },
+  { value: 'FREQ=MONTHLY', label: 'ทุกเดือน' },
+  { value: 'FREQ=YEARLY', label: 'ทุกปี' },
+];
+
+export function repeatLabel(rrule: string | null | undefined): string {
+  if (!rrule) return 'ไม่ซ้ำ';
+  const known = REPEAT_OPTIONS.find((o) => o.value === rrule);
+  if (known) return known.label;
+
+  // Weekly-on-a-weekday comes from chat ("ทุกวันจันทร์") and has no picker entry.
+  const byDay = rrule.match(/BYDAY=(MO|TU|WE|TH|FR|SA|SU)/)?.[1];
+  const dayName: Record<string, string> = {
+    MO: 'จันทร์', TU: 'อังคาร', WE: 'พุธ', TH: 'พฤหัสบดี', FR: 'ศุกร์', SA: 'เสาร์', SU: 'อาทิตย์',
+  };
+  if (byDay) return `ทุกวัน${dayName[byDay]}`;
+
+  const monthDay = rrule.match(/BYMONTHDAY=(\d{1,2})/)?.[1];
+  if (monthDay) return `ทุกวันที่ ${monthDay}`;
+
+  return 'ซ้ำ';
 }
 
 /** "09:30" for `iso`, in `timezone` — what a type="time" input expects. */

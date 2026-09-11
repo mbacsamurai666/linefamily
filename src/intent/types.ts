@@ -28,6 +28,8 @@ export interface EventDraft {
   note?: string;
   /** Display name of who this event is about — "น้องพร สอบปลายภาค พรุ่งนี้". */
   attendeeName?: string;
+  /** RFC 5545 RRULE body for a repeating appointment, e.g. "FREQ=WEEKLY;BYDAY=MO". */
+  rrule?: string;
 }
 
 export interface ExpenseDraft {
@@ -43,6 +45,8 @@ export interface ExpenseDraft {
    * "ค่าข้าว 300 หารกับ พี่เอ" -> the payer + พี่เอ split it evenly.
    */
   splitWithNames?: string[];
+  /** LINE message id of the slip this was read from, when it came from a photo. */
+  receiptFileId?: string;
 }
 
 export interface BillDraft {

@@ -74,6 +74,8 @@ export interface EventPatch {
   note?: string | null;
   /** Null clears it; a name that matches no member is dropped, as on create. */
   attendeeName?: string | null;
+  /** Null (or empty) turns a repeating appointment back into a one-off. */
+  rrule?: string | null;
 }
 
 export async function updateEvent(
@@ -96,6 +98,7 @@ export async function updateEvent(
       ...(patch.category !== undefined ? { category: patch.category } : {}),
       ...(patch.location !== undefined ? { location: patch.location } : {}),
       ...(patch.note !== undefined ? { note: patch.note } : {}),
+      ...(patch.rrule !== undefined ? { rrule: patch.rrule || null } : {}),
     },
   });
 

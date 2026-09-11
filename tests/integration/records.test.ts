@@ -19,7 +19,12 @@ import {
 } from '../../src/modules/records.js';
 import { computeExpenseSummary } from '../../src/modules/expenseSummary.js';
 import { computeTaskCounts } from '../../src/modules/dashboard.js';
-import { generateMedicationJobs } from '../../src/reminders/generate.js';
+import {
+  generateBirthdayJobs,
+  generateEventJobs,
+  generateMedicationJobs,
+  markBillPaid,
+} from '../../src/reminders/generate.js';
 
 const ZONE = 'Asia/Bangkok';
 const NOW = DateTime.fromISO('2026-09-04T10:00', { zone: ZONE });
@@ -257,6 +262,166 @@ describe('switching a recurring thing off', () => {
 
     expect(await db.prisma.medication.count()).toBe(0);
     expect(await pendingJobs('MEDICATION', med.id)).toBe(0);
+  });
+});
+
+describe('repeating appointments', () => {
+  it('schedules several occurrences from one RRULE', async () => {
+    await persistDraft(
+      {
+        kind: 'event',
+        title: 'กายภาพบำบัดแม่',
+        startAt: NOW.plus({ days: 3 }).set({ hour: 9 }),
+        allDay: false,
+        category: 'MEDICAL',
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+      },
+      ctx(),
+    );
+
+    const event = await db.prisma.event.findFirstOrThrow();
+    expect(event.rrule).toBe('FREQ=WEEKLY;BYDAY=MO');
+
+    const jobs = await db.prisma.notificationJob.findMany({
+      where: { kind: 'EVENT', refId: event.id, status: 'PENDING' },
+      orderBy: { dueAt: 'asc' },
+    });
+
+    // Four occurrences, each with its own set of lead-up reminders — many more
+    // than the three a one-off would produce.
+    expect(jobs.length).toBeGreaterThan(3);
+
+    const mondays = new Set(
+      jobs.map((j) => (j.payload as { text: string }).text.match(/\d+ [ก-๛.]+/)?.[0]),
+    );
+    expect(mondays.size).toBeGreaterThan(1);
+    expect((jobs[0]?.payload as { text: string }).text).toContain('ทุกวันจันทร์');
+  });
+
+  it('clearing the repeat drops it back to a single occurrence', async () => {
+    await persistDraft(
+      {
+        kind: 'event',
+        title: 'ประชุม',
+        // Far enough out that all three default offsets are still ahead.
+        startAt: NOW.plus({ days: 10 }),
+        allDay: false,
+        category: 'WORK',
+        rrule: 'FREQ=WEEKLY',
+      },
+      ctx(),
+    );
+    const event = await db.prisma.event.findFirstOrThrow();
+    const repeating = await pendingJobs('EVENT', event.id);
+
+    await updateEvent(ctx(), event.id, { rrule: null });
+
+    const once = await pendingJobs('EVENT', event.id);
+    expect(once).toBeLessThan(repeating);
+    expect(once).toBe(3); // the default 7-day / 1-day / 2-hour offsets
+  });
+
+  it('survives a rule it cannot parse instead of losing the appointment', async () => {
+    const event = await db.prisma.event.create({
+      data: {
+        familyId,
+        title: 'พัง',
+        startAt: NOW.plus({ days: 10 }).toJSDate(),
+        rrule: 'ไม่ใช่ RRULE',
+      },
+    });
+
+    await generateEventJobs(db.prisma, event.id, NOW);
+    expect(await pendingJobs('EVENT', event.id)).toBe(3);
+  });
+});
+
+describe('birthdays', () => {
+  it('schedules the next one, a day before and on the day', async () => {
+    await db.prisma.member.update({
+      where: { id: memberId },
+      data: { birthDate: DateTime.fromISO('1990-12-05', { zone: 'utc' }).toJSDate() },
+    });
+
+    await generateBirthdayJobs(db.prisma, memberId, NOW);
+
+    const jobs = await db.prisma.notificationJob.findMany({
+      where: { kind: 'BIRTHDAY', refId: memberId, status: 'PENDING' },
+      orderBy: { dueAt: 'asc' },
+    });
+    expect(jobs).toHaveLength(2);
+    expect(DateTime.fromJSDate(jobs[1]!.dueAt).setZone(ZONE).toFormat('MM-dd')).toBe('12-05');
+    expect((jobs[1]?.payload as { text: string }).text).toContain('ครบ 36 ปี');
+  });
+
+  it('rolls to next year once this year\'s has passed', async () => {
+    // NOW is 4 Sep 2026, so a January birthday belongs to 2027.
+    await db.prisma.member.update({
+      where: { id: memberId },
+      data: { birthDate: DateTime.fromISO('1985-01-20', { zone: 'utc' }).toJSDate() },
+    });
+
+    await generateBirthdayJobs(db.prisma, memberId, NOW);
+
+    const onTheDay = await db.prisma.notificationJob.findFirstOrThrow({
+      where: { kind: 'BIRTHDAY', status: 'PENDING' },
+      orderBy: { dueAt: 'desc' },
+    });
+    expect(DateTime.fromJSDate(onTheDay.dueAt).setZone(ZONE).toFormat('yyyy-MM-dd')).toBe(
+      '2027-01-20',
+    );
+  });
+
+  it('clearing the birth date retires the reminder', async () => {
+    await db.prisma.member.update({
+      where: { id: memberId },
+      data: { birthDate: DateTime.fromISO('1990-12-05', { zone: 'utc' }).toJSDate() },
+    });
+    await generateBirthdayJobs(db.prisma, memberId, NOW);
+
+    await db.prisma.member.update({ where: { id: memberId }, data: { birthDate: null } });
+    await generateBirthdayJobs(db.prisma, memberId, NOW);
+
+    expect(await pendingJobs('BIRTHDAY', memberId)).toBe(0);
+  });
+});
+
+describe('paying a bill', () => {
+  it('books the expense and clears this cycle\'s reminders, keeping the bill', async () => {
+    await persistDraft({ kind: 'bill', name: 'ค่าไฟ', amount: 80000, dueDay: 25 }, ctx());
+    const bill = await db.prisma.bill.findFirstOrThrow();
+    const before = await pendingJobs('BILL', bill.id);
+    expect(before).toBeGreaterThan(0);
+
+    const result = await markBillPaid(db.prisma, bill.id, NOW);
+    expect(result?.amountSatang).toBe(80000);
+
+    const tx = await db.prisma.transaction.findFirstOrThrow();
+    expect(tx).toMatchObject({ amount: 80000, direction: 'OUT', billId: bill.id });
+
+    // Next month's reminders survive; this cycle's do not.
+    const after = await pendingJobs('BILL', bill.id);
+    expect(after).toBeLessThan(before);
+    expect(after).toBeGreaterThan(0);
+    expect(await db.prisma.bill.count({ where: { active: true } })).toBe(1);
+  });
+
+  it('records nothing when the bill has no set amount', async () => {
+    await persistDraft({ kind: 'bill', name: 'ค่าน้ำ', dueDay: 20 }, ctx());
+    const bill = await db.prisma.bill.findFirstOrThrow();
+
+    const result = await markBillPaid(db.prisma, bill.id, NOW);
+    expect(result?.amountSatang).toBeNull();
+    expect(await db.prisma.transaction.count()).toBe(0);
+  });
+
+  it('honours autoCreateTx being switched off', async () => {
+    const bill = await db.prisma.bill.create({
+      data: { familyId, name: 'ค่าเน็ต', amount: 59900, dueDay: 15, autoCreateTx: false },
+    });
+
+    await markBillPaid(db.prisma, bill.id, NOW);
+    expect(await db.prisma.transaction.count()).toBe(0);
   });
 });
 

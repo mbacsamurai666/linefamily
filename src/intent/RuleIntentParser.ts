@@ -1,5 +1,6 @@
 import { parseThaiDateTime, stripMatched } from '../thai/date.js';
 import { normalizeThaiDigits, parseAmountToSatang } from '../thai/number.js';
+import { matchRecurrence } from '../thai/recurrence.js';
 import { guessAssetCategory } from './assetTypes.js';
 import type { EventCategory } from './categories.js';
 import { guessEventCategory } from './categories.js';
@@ -453,8 +454,13 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
   if (!when) return { kind: 'unknown' };
 
   const attendee = extractAttendee(text, ctx.memberNames);
+  const repeat = matchRecurrence(text);
 
-  const title = stripMatched(text, [...when.matched, ...(attendee ? [attendee.matched] : [])]);
+  const title = stripMatched(text, [
+    ...when.matched,
+    ...(attendee ? [attendee.matched] : []),
+    ...(repeat ? [repeat.matched] : []),
+  ]);
   // A bare date with no subject is not an appointment worth creating.
   if (title.length < 2) return { kind: 'unknown' };
 
@@ -484,6 +490,7 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
       allDay: when.allDay,
       category,
       ...(attendee ? { attendeeName: attendee.name } : {}),
+      ...(repeat ? { rrule: repeat.rrule } : {}),
     },
   };
 }

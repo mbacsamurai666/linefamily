@@ -8,6 +8,7 @@ import { persistDraft } from '../modules/persist.js';
 import { buildClarifyCard } from './flex/clarify.js';
 import { buildConfirmCard } from './flex/confirm.js';
 import type { DraftStore } from './drafts.js';
+import type { PhotoTargetStore } from './photoTargets.js';
 
 /**
  * Webhook event handling.
@@ -28,12 +29,16 @@ export interface WebhookDeps {
   blobApi?: messagingApi.MessagingApiBlobClient;
   /** Omit (or leave AI_MODULES_DISABLED including "receipts") to skip OCR entirely. */
   visionParser?: VisionParser;
+  /** Remembers which document an incoming photo belongs to. */
+  photoTargets?: PhotoTargetStore;
 }
 
 const HELP_TEXT = [
   'พิมพ์ได้เลยแบบนี้',
   '• "พรุ่งนี้บ่าย 3 พาแม่ไปหาหมอ" — สร้างนัด',
   '• "น้องพร สอบปลายภาค พรุ่งนี้ 9 โมง" — นัดของลูก ระบุชื่อได้เลย',
+  '• "ทุกวันจันทร์ 9 โมง กายภาพแม่" — นัดที่เกิดซ้ำ',
+  '• "ยื่นเอกสาร วันทำการถัดไป" — ข้ามเสาร์-อาทิตย์และวันหยุดให้',
   '• "ค่าข้าว 250" — บันทึกรายจ่าย',
   '• "ซื้อของ: นม, ไข่" — เพิ่มลิสต์ซื้อของ',
   '• "ตั้งบิล ค่าไฟ 800 ทุกวันที่ 5" — บิลประจำเดือน',
@@ -53,6 +58,8 @@ const HELP_TEXT = [
   '• "ทำแล้ว <ชื่องาน>" — เวรนี้ทำแล้ว หมุนไปคนถัดไป',
   '• "ข้อมูลฉุกเฉิน" — ดูกรุ๊ปเลือด/แพ้ยา/โรคประจำตัวทุกคน',
   '• "ตั้งงบ ค่าไฟ 1000 บาท" — ตั้งงบรายเดือน เตือนเมื่อใกล้/เกินงบ',
+  '• "วันเกิด น้องพร 5 ม.ค. 60" — เตือนวันเกิดล่วงหน้า 1 วันทุกปี',
+  '• "จ่ายบิลแล้ว ค่าไฟ" — ตัดเป็นรายจ่ายและหยุดเตือนรอบนี้',
   '• "บอร์ดงาน" — ดูงานที่ค้างอยู่ทั้งหมด',
   '• "ปิดงาน <ชื่องาน>" — ย้ายงานไปช่องเสร็จแล้ว',
   '• "สรุปหนี้" — ดูว่าใครติดใครอยู่เท่าไหร่เดือนนี้',
@@ -272,13 +279,30 @@ async function handleImageMessage(
   deps: WebhookDeps,
 ): Promise<void> {
   if (event.message.type !== 'image') return;
-  if (!deps.visionParser || !deps.blobApi) return;
 
   const groupId = groupIdOf(event);
   if (!groupId) return;
 
   const family = await resolveFamily(deps, groupId);
   const member = await resolveMember(deps, family.id, groupId, event.source.userId);
+
+  // A photo the bot asked for beats reading it as a receipt: the person was
+  // told to send this one, so guessing at it would be perverse.
+  const awaiting = member && deps.photoTargets ? deps.photoTargets.take(member.id) : null;
+  if (awaiting) {
+    await deps.prisma.document.updateMany({
+      where: { id: awaiting.documentId, familyId: family.id },
+      data: { fileId: event.message.id },
+    });
+
+    await deps.api.replyMessage({
+      replyToken: event.replyToken,
+      messages: [{ type: 'text', text: `📎 เก็บรูป "${awaiting.documentName}" ไว้ให้แล้วครับ` }],
+    });
+    return;
+  }
+
+  if (!deps.visionParser || !deps.blobApi) return;
 
   const chunks: Buffer[] = [];
   try {
@@ -307,8 +331,15 @@ async function handleImageMessage(
   const result = await deps.visionParser.parseReceipt(base64, 'image/jpeg', ctx);
   if (result.kind === 'unknown') return;
 
+  // Remember which photo this came from, so the saved expense can point back
+  // at the slip it was read out of.
+  const draft =
+    result.draft.kind === 'expense'
+      ? { ...result.draft, receiptFileId: event.message.id }
+      : result.draft;
+
   const token = deps.drafts.put({
-    draft: result.draft,
+    draft,
     familyId: family.id,
     memberId: member?.id ?? null,
     source: result.source,
@@ -321,7 +352,7 @@ async function handleImageMessage(
     replyToken: event.replyToken,
     messages: [
       buildConfirmCard({
-        draft: result.draft,
+        draft,
         draftToken: token,
         timezone: family.timezone,
         source: result.source,
@@ -373,16 +404,24 @@ async function handlePostback(
   const zone = family?.timezone ?? deps.defaultTimezone;
 
   try {
-    const { summary } = await persistDraft(pending.draft, {
+    const { summary, photoTarget } = await persistDraft(pending.draft, {
       prisma: deps.prisma,
       familyId: pending.familyId,
       memberId: pending.memberId,
       now: DateTime.now().setZone(zone),
     });
 
+    // A document can keep a picture of itself, but an image message carries no
+    // caption — so the bot has to ask, then remember what the next photo is for.
+    let followUp = '';
+    if (photoTarget && pending.memberId && deps.photoTargets) {
+      deps.photoTargets.expect(pending.memberId, photoTarget.documentId, photoTarget.documentName);
+      followUp = '\n\n📷 ส่งรูปเอกสารมาได้เลยครับ เดี๋ยวเก็บไว้ให้ (ภายใน 15 นาที)';
+    }
+
     await deps.api.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: `✅ ${summary}` }],
+      messages: [{ type: 'text', text: `✅ ${summary}${followUp}` }],
     });
   } catch (err) {
     deps.log?.('persist failed', { err: String(err) });

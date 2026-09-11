@@ -5,6 +5,7 @@ import { CATEGORY_LABEL } from '../../intent/categories.js';
 import { DOCUMENT_TYPE_LABEL } from '../../intent/documentTypes.js';
 import type { Draft } from '../../intent/types.js';
 import { formatSatang } from '../../thai/number.js';
+import { recurrenceLabel } from '../../thai/recurrence.js';
 import { formatThaiDateTime } from '../format.js';
 
 /**
@@ -47,6 +48,7 @@ function describe(draft: Draft, zone: string): CardContent {
         rows: [
           row('เรื่อง', draft.title),
           row('เมื่อ', when),
+          ...(draft.rrule ? [row('ทำซ้ำ', recurrenceLabel(draft.rrule))] : []),
           row('ประเภท', CATEGORY_LABEL[draft.category]),
           ...(draft.attendeeName ? [row('สำหรับ', draft.attendeeName)] : []),
           ...(draft.location ? [row('สถานที่', draft.location)] : []),

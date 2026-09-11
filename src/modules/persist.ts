@@ -30,6 +30,11 @@ export interface PersistContext {
 
 export interface PersistResult {
   summary: string;
+  /**
+   * Set when the row just saved can still take a photo — the caller offers to
+   * keep one, and files whatever arrives next against this id.
+   */
+  photoTarget?: { documentId: string; documentName: string };
 }
 
 export async function persistDraft(draft: Draft, ctx: PersistContext): Promise<PersistResult> {
@@ -72,6 +77,7 @@ async function persistEvent(
       allDay: draft.allDay,
       ...(draft.location !== undefined ? { location: draft.location } : {}),
       ...(draft.note !== undefined ? { note: draft.note } : {}),
+      ...(draft.rrule !== undefined ? { rrule: draft.rrule } : {}),
       ...(ctx.memberId !== null ? { ownerId: ctx.memberId } : {}),
     },
   });
@@ -125,6 +131,7 @@ async function persistExpense(
       occurredAt: draft.occurredAt.toJSDate(),
       ...(categoryId !== undefined ? { categoryId } : {}),
       ...(draft.note !== undefined ? { note: draft.note } : {}),
+      ...(draft.receiptFileId !== undefined ? { receiptFileId: draft.receiptFileId } : {}),
       ...(ctx.memberId !== null ? { paidById: ctx.memberId } : {}),
     },
   });
@@ -222,7 +229,10 @@ async function persistDocument(
 
   await generateDocumentJobs(ctx.prisma, document.id, ctx.now);
 
-  return { summary: `บันทึกเอกสาร "${draft.name}" แล้ว` };
+  return {
+    summary: `บันทึกเอกสาร "${draft.name}" แล้ว`,
+    photoTarget: { documentId: document.id, documentName: document.name },
+  };
 }
 
 async function persistMed(

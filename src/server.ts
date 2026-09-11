@@ -12,7 +12,9 @@ import { VisionParser } from './intent/VisionParser.js';
 import { verifyLiffIdToken } from './api/liffAuth.js';
 import { createApp } from './line/app.js';
 import { DraftStore } from './line/drafts.js';
+import { PhotoTargetStore } from './line/photoTargets.js';
 import { ReminderEngine, yearMonthOf } from './reminders/engine.js';
+import { refreshRecurring } from './reminders/generate.js';
 import {
   LineNotifier,
   PrismaBudgetStore,
@@ -73,6 +75,7 @@ async function main(): Promise<void> {
   });
 
   const drafts = new DraftStore();
+  const photoTargets = new PhotoTargetStore();
   const openai = cfg.aiUsable ? new OpenAI({ apiKey: cfg.OPENAI_API_KEY }) : null;
   const parser = buildParser(cfg, openai);
   const visionParser = buildVisionParser(cfg, openai);
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
     ...(visionParser ? { visionParser } : {}),
     parser,
     drafts,
+    photoTargets,
     defaultTimezone: cfg.TZ,
     channelSecret: cfg.LINE_CHANNEL_SECRET,
     pendingDrafts: () => drafts.size,
@@ -138,9 +142,21 @@ async function main(): Promise<void> {
     24 * 60 * 60_000,
   );
 
+  // Birthdays and repeating appointments are only ever scheduled a little way
+  // ahead, so something has to walk them forward. Runs at boot and daily.
+  const rollRecurring = () => {
+    photoTargets.sweep();
+    refreshRecurring(prisma, DateTime.now().setZone(cfg.TZ))
+      .then(() => log('recurring refreshed'))
+      .catch((err) => log('recurring refresh failed', { err: String(err) }));
+  };
+  rollRecurring();
+  const recurring = setInterval(rollRecurring, 24 * 60 * 60_000);
+
   const shutdown = async () => {
     clearInterval(tick);
     clearInterval(reconcile);
+    clearInterval(recurring);
     server.close();
     await disconnect();
     process.exit(0);

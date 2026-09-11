@@ -609,6 +609,80 @@ describe('editing and deleting through the API', () => {
   });
 });
 
+describe('creating standing items from the app', () => {
+  it('POST /bills sets one up with its reminders', async () => {
+    const res = await authed('/bills', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ค่าไฟ', amountBaht: 800, dueDay: 5 }),
+    });
+    expect(res.status).toBe(201);
+
+    const bill = await db.prisma.bill.findFirstOrThrow();
+    expect(bill).toMatchObject({ name: 'ค่าไฟ', amount: 80000, dueDay: 5, active: true });
+    expect(await db.prisma.notificationJob.count({ where: { kind: 'BILL' } })).toBeGreaterThan(0);
+  });
+
+  it('POST /documents accepts an expiry and schedules the 60/30/7 warnings', async () => {
+    const expiresAt = DateTime.now().setZone(ZONE).plus({ days: 120 }).toISODate();
+    const res = await authed('/documents', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ใบขับขี่', type: 'DRIVER_LICENSE', expiresAt }),
+    });
+    expect(res.status).toBe(201);
+
+    expect(await db.prisma.document.count()).toBe(1);
+    expect(await db.prisma.notificationJob.count({ where: { kind: 'DOCUMENT' } })).toBe(3);
+  });
+
+  it('POST /medications files it under whoever is signed in', async () => {
+    const res = await authed('/medications', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ยาความดัน', times: ['08:00', '20:00'], dosage: '1 เม็ด' }),
+    });
+    expect(res.status).toBe(201);
+
+    const med = await db.prisma.medication.findFirstOrThrow();
+    expect(med).toMatchObject({ name: 'ยาความดัน', memberId, dosage: '1 เม็ด' });
+  });
+
+  it('POST /chores resolves the rotation names it recognises', async () => {
+    await db.prisma.member.create({
+      data: { familyId, lineUserId: 'U_dad_api', displayName: 'พ่อ' },
+    });
+
+    const res = await authed('/chores', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ล้างจาน', cadence: 'DAILY', rotationNames: ['แม่', 'พ่อ'] }),
+    });
+    expect(res.status).toBe(201);
+
+    const chore = await db.prisma.chore.findFirstOrThrow();
+    expect(chore.rotationMemberIds).toHaveLength(2);
+  });
+
+  it('POST /events carries a repeat rule through', async () => {
+    const startAt = DateTime.now().setZone(ZONE).plus({ days: 4 }).set({ hour: 9, minute: 0 });
+    const res = await authed('/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'กายภาพบำบัด',
+        startAt: startAt.toFormat("yyyy-MM-dd'T'HH:mm"),
+        category: 'MEDICAL',
+        rrule: 'FREQ=WEEKLY',
+      }),
+    });
+    expect(res.status).toBe(201);
+
+    const event = await db.prisma.event.findFirstOrThrow();
+    expect(event.rrule).toBe('FREQ=WEEKLY');
+
+    const detail = (await authed(`/events/${event.id}`).then((r) => r.json())) as {
+      rrule: string | null;
+    };
+    expect(detail.rrule).toBe('FREQ=WEEKLY');
+  });
+});
+
 describe('LIFF-created data is indistinguishable from chat-created data', () => {
   it('a LIFF-added expense generates a budget-tracked transaction just like the chat path', async () => {
     // persistDraft is the single write path both surfaces share — this is a
