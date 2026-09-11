@@ -76,6 +76,31 @@ describe('RuleIntentParser — expenses', () => {
 });
 
 describe('RuleIntentParser — appointments', () => {
+  it('reads "อีก 5 วันมีนัด 15.00" as five days out, titled as an appointment', async () => {
+    // Exactly what the family typed in its first week. It used to land on
+    // *today* at 15:00, titled "อีก 5 วันมีนัด".
+    const r = await rule.parse('อีก 5 วันมีนัด 15.00', ctx);
+    if (r.kind !== 'event' || r.draft.kind !== 'event') throw new Error('expected event');
+    expect(r.draft.startAt.toFormat("yyyy-MM-dd'T'HH:mm")).toBe('2026-09-09T15:00');
+    expect(r.draft.title).toBe('นัดหมาย');
+    expect(r.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('keeps a subject after "มีนัด" but drops the "มี"', async () => {
+    const r = await rule.parse('อีก 5 วัน มีนัดหมอฟัน 15:00', ctx);
+    expect(r.kind === 'event' && r.draft.kind === 'event' && r.draft.title).toBe('นัดหมอฟัน');
+  });
+
+  it('leaves a remark about calling something off for ChatGPT to read', async () => {
+    const r = await rule.parse('งดกายภาพแม่จันทร์หน้านะ', ctx);
+    expect(r.kind === 'event' && r.confidence).toBeLessThan(0.7);
+  });
+
+  it('does the same for a bare day word with nothing behind it', async () => {
+    const r = await rule.parse('วันนี้อากาศดีจัง', ctx);
+    expect(r.kind === 'event' && r.confidence).toBeLessThan(0.7);
+  });
+
   it('is confident when the date is stated explicitly', async () => {
     const r = await rule.parse('พรุ่งนี้บ่าย 3 พาแม่ไปหาหมอศิริราช', ctx);
     if (r.kind !== 'event') throw new Error('expected event');

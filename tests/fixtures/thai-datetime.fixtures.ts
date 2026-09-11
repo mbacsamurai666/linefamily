@@ -20,6 +20,20 @@ export interface DateTimeFixture {
 }
 
 export const DATE_ONLY: DateTimeFixture[] = [
+  // A count from today — the phrase that went unread in the family's first
+  // week ("อีก 5 วันมีนัด 15.00" became an appointment *today*).
+  { input: 'อีก 5 วัน', expect: '2026-09-09T00:00', allDay: true },
+  { input: 'อีกสามวัน', expect: '2026-09-07T00:00', allDay: true, note: 'spelled-out number' },
+  { input: 'อีก ๒ วัน', expect: '2026-09-06T00:00', allDay: true, note: 'Thai digits' },
+  {
+    input: 'อีก 2 อาทิตย์',
+    expect: '2026-09-18T00:00',
+    allDay: true,
+    note: 'weeks — not "the Sunday two from now"',
+  },
+  { input: 'อีก 1 สัปดาห์', expect: '2026-09-11T00:00', allDay: true },
+  { input: 'อีก 1 เดือน', expect: '2026-10-04T00:00', allDay: true },
+  { input: '10 วันข้างหน้า', expect: '2026-09-14T00:00', allDay: true },
   { input: 'วันนี้', expect: '2026-09-04T00:00', allDay: true },
   { input: 'พรุ่งนี้', expect: '2026-09-05T00:00', allDay: true },
   { input: 'มะรืนนี้', expect: '2026-09-06T00:00', allDay: true },
@@ -99,6 +113,13 @@ export const TIME_ONLY: DateTimeFixture[] = [
 
 export const COMBINED: DateTimeFixture[] = [
   {
+    input: 'อีก 5 วันมีนัด 15.00',
+    expect: '2026-09-09T15:00',
+    title: 'มีนัด',
+    note: 'the message exactly as the family typed it',
+  },
+  { input: 'อีกสามวันไปหาหมอฟัน บ่ายสอง', expect: '2026-09-07T14:00', title: 'ไปหาหมอฟัน' },
+  {
     input: 'พรุ่งนี้บ่าย 3 พาแม่ไปหาหมอศิริราช',
     expect: '2026-09-05T15:00',
     title: 'พาแม่ไปหาหมอศิริราช',
@@ -120,6 +141,7 @@ export const COMBINED: DateTimeFixture[] = [
  */
 export const NO_MATCH: DateTimeFixture[] = [
   { input: 'สวัสดีครับ', expect: null },
+  { input: 'อีกไม่กี่วันไปเที่ยว', expect: null, note: 'no count to count — not a guess' },
   { input: 'ค่าข้าว 250', expect: null },
   { input: 'จ่ายค่าน้ำ 350 บาท', expect: null },
   { input: 'ค่าไฟ 1,250', expect: null },

@@ -72,6 +72,30 @@ const MAX_COMMAND_LENGTH = 300;
 /** Long enough to name everything a family has, short enough to stay cheap. */
 const MAX_NAMES = 30;
 
+/**
+ * The next three weeks, one line per day: "จ. 14 ก.ย. (จันทร์นี้)".
+ *
+ * Working out which date "จันทร์หน้า" is was where the model spent most of its
+ * time — 12 to 15 seconds of reasoning, long enough to time out — and where
+ * the faster settings got it wrong. Handing it a calendar to look things up
+ * in turns date arithmetic into reading, which is both faster and right.
+ */
+export function calendarLines(now: DateTime): string {
+  const today = now.startOf('day');
+  const nextWeekStart = today.plus({ weeks: 1 }).startOf('week');
+  const lines: string[] = [];
+  for (let i = 0; i < 21; i++) {
+    const day = today.plus({ days: i });
+    const notes: string[] = [];
+    if (i === 0) notes.push('วันนี้');
+    if (i === 1) notes.push('พรุ่งนี้');
+    if (i === 2) notes.push('มะรืน');
+    notes.push(day < nextWeekStart ? 'สัปดาห์นี้' : day < nextWeekStart.plus({ weeks: 1 }) ? 'สัปดาห์หน้า' : 'อีกสองสัปดาห์');
+    lines.push(`${formatThaiDate(day)} (${notes.join(', ')})`);
+  }
+  return lines.join('\n');
+}
+
 function list(label: string, names: string[]): string {
   const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))].slice(0, MAX_NAMES);
   return unique.length > 0 ? `${label}: ${unique.join(', ')}` : '';
@@ -91,12 +115,18 @@ export function systemPrompt(ctx: RewriteContext): string {
     '- ถ้าข้อความเป็นการคุยกันทั่วไป เล่าเรื่อง ทักทาย หรือไม่ได้ขอให้บอททำ/ดูอะไร ให้ command = null',
     '- ห้ามแต่งคำสั่งที่ไม่มีในรายการ ถ้าไม่มีคำสั่งที่ตรง ให้ command = null',
     '- วันที่ต้องเขียนเป็นวันที่จริงเสมอ เช่น "21 ก.ย." ห้ามเขียน "พรุ่งนี้" หรือ "จันทร์หน้า" (ยกเว้นคำสั่ง นัดวันนี้/นัดพรุ่งนี้/นัดสัปดาห์นี้/นัดสัปดาห์หน้า)',
+    '- หาวันที่จากปฏิทินด้านล่าง ไม่ต้องคำนวณเอง: "จันทร์หน้า"/"จันทร์นี้" คือวันจันทร์ถัดไปที่ยังมาไม่ถึง, "อีก 5 วัน" คือนับจากวันนี้ไป 5 วัน',
+    '- เขียนเฉพาะตัวคำสั่ง ห้ามใส่คำอธิบายหลังขีด (—) ที่อยู่ในรายการ',
     '- ใส่ปี พ.ศ. เฉพาะเมื่อไม่ใช่ปีนี้ เวลาเขียนแบบ 24 ชั่วโมง เช่น 14:00',
     '- ถ้าข้อความพูดถึงชื่อที่มีอยู่แล้วในรายชื่อด้านล่าง ให้ใช้ชื่อนั้นตามที่เขียนไว้',
     '- ห้ามเดาจำนวนเงิน ชื่อคน หรือวันที่ ที่ไม่มีในข้อความ ถ้าขาดข้อมูลสำคัญให้ command = null',
     '- confidence คือความมั่นใจว่าคนพิมพ์ต้องการคำสั่งนี้จริง ๆ (0 ถึง 1)',
     '',
     `วันนี้: ${formatThaiDate(ctx.now)} เวลา ${ctx.now.toFormat('HH:mm')} (${ctx.now.toFormat('yyyy-MM-dd')})`,
+    '',
+    'ปฏิทิน:',
+    calendarLines(ctx.now),
+    '',
     list('สมาชิกในบ้าน', ctx.memberNames),
     list('หมวดค่าใช้จ่ายที่มี', ctx.categoryNames),
     list('นัดที่มี', ctx.eventTitles),
@@ -113,6 +143,19 @@ export interface OpenAiRewriterOptions {
   model: string;
   timeoutMs?: number;
   onError?: (err: unknown) => void;
+}
+
+/**
+ * Measured on twelve real family messages with the calendar in the prompt
+ * (gpt-5-mini): default reasoning 11/12 right, median 10s, worst 30s; 'low'
+ * 11–12/12, median 6s, worst 8–12s; 'minimal' 6/12. The first production
+ * message timed out at the old 8-second limit on default reasoning.
+ */
+const REASONING_EFFORT = 'low';
+
+/** Only reasoning models take reasoning_effort; anything else rejects it. */
+function takesReasoningEffort(model: string): boolean {
+  return /^(?:gpt-5|o\d)/.test(model);
 }
 
 export class OpenAiCommandRewriter implements CommandRewriter {
@@ -132,8 +175,15 @@ export class OpenAiCommandRewriter implements CommandRewriter {
             type: 'json_schema',
             json_schema: { name: 'family_command', strict: true, schema: jsonSchema },
           },
+          ...(takesReasoningEffort(this.options.model) ? { reasoning_effort: REASONING_EFFORT } : {}),
         },
-        { timeout: this.options.timeoutMs ?? 8000 },
+        {
+          timeout: this.options.timeoutMs ?? 20_000,
+          // The SDK retries twice by default, so one slow answer became three
+          // and the family waited half a minute for silence. One try; if it
+          // fails, the bot falls back to its rules.
+          maxRetries: 0,
+        },
       );
 
       const raw = completion.choices[0]?.message.content;

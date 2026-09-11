@@ -238,6 +238,28 @@ function matchDate(text: string, now: DateTime): DateMatch | null {
     }
   }
 
+  // "อีก 5 วัน" / "อีกสามวัน" / "อีก 2 อาทิตย์" / "5 วันข้างหน้า" — a count
+  // from today. Before the weekday rule, which would read the "อาทิตย์" in
+  // "อีก 2 อาทิตย์" as a Sunday.
+  const count = text.match(
+    /(?:อีก\s*([\dก-๛]+)\s*(วัน|สัปดาห์|อาทิตย์|เดือน|ปี)|([\dก-๛]+)\s*(วัน|สัปดาห์|อาทิตย์|เดือน)\s*ข้างหน้า)/,
+  );
+  if (count) {
+    const amount = parseThaiNumber((count[1] ?? count[3]) as string);
+    const unit = (count[2] ?? count[4]) as string;
+    if (amount !== null && amount >= 1 && amount <= 400 && Number.isInteger(amount)) {
+      const date =
+        unit === 'วัน'
+          ? today.plus({ days: amount })
+          : unit === 'เดือน'
+            ? today.plus({ months: amount })
+            : unit === 'ปี'
+              ? today.plus({ years: amount })
+              : today.plus({ weeks: amount });
+      return { date, text: count[0] };
+    }
+  }
+
   // "วันจันทร์หน้า" / "จันทร์หน้า" / "วันศุกร์นี้" — checked before the bare
   // "อาทิตย์หน้า" relative rule, which would otherwise swallow the weekday.
   const weekday = text.match(new RegExp(`(?:วัน)?(${WEEKDAY_ALT})(นี้|หน้า)?`));

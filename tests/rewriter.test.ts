@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DateTime } from 'luxon';
 import type OpenAI from 'openai';
-import { OpenAiCommandRewriter, systemPrompt, type RewriteContext } from '../src/intent/commandRewriter.js';
+import {
+  calendarLines,
+  OpenAiCommandRewriter,
+  systemPrompt,
+  type RewriteContext,
+} from '../src/intent/commandRewriter.js';
 import { COMMAND_CATALOG } from '../src/intent/commandCatalog.js';
 
 const ctx: RewriteContext = {
@@ -73,6 +78,46 @@ describe('OpenAiCommandRewriter', () => {
     expect(request.response_format.json_schema.strict).toBe(true);
     expect(request.messages[0]?.content).toContain('ศ. 11 ก.ย. 69');
     expect(request.messages[0]?.content).toContain('กายภาพแม่');
+  });
+});
+
+describe('how ChatGPT is called', () => {
+  type Sent = [{ reasoning_effort?: string }, { timeout: number; maxRetries: number }];
+
+  it('asks a reasoning model to reason lightly, once, with room to finish', async () => {
+    const { openai, create } = client(JSON.stringify({ command: null, confidence: 1 }));
+    await new OpenAiCommandRewriter({ client: openai, model: 'gpt-5-mini' }).rewrite('x', ctx);
+
+    const [body, options] = create.mock.calls[0] as unknown as Sent;
+    expect(body.reasoning_effort).toBe('low');
+    // The first production message timed out at 8s and was retried twice.
+    expect(options.timeout).toBeGreaterThanOrEqual(15_000);
+    expect(options.maxRetries).toBe(0);
+  });
+
+  it('does not send reasoning_effort to a model that would reject it', async () => {
+    const { openai, create } = client(JSON.stringify({ command: null, confidence: 1 }));
+    await new OpenAiCommandRewriter({ client: openai, model: 'gpt-4.1-mini' }).rewrite('x', ctx);
+
+    const [body] = create.mock.calls[0] as unknown as Sent;
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+});
+
+describe('the calendar in the prompt', () => {
+  // Saturday 12 Sep 2026 — the day "จันทร์หน้า" was first asked about.
+  const saturday = DateTime.fromISO('2026-09-12T10:00', { zone: 'Asia/Bangkok' });
+  const lines = calendarLines(saturday).split('\n');
+
+  it('covers three weeks from today, naming today and tomorrow', () => {
+    expect(lines).toHaveLength(21);
+    expect(lines[0]).toBe('ส. 12 ก.ย. 69 (วันนี้, สัปดาห์นี้)');
+    expect(lines[1]).toBe('อา. 13 ก.ย. 69 (พรุ่งนี้, สัปดาห์นี้)');
+  });
+
+  it('puts Monday 14th in next week, so "สัปดาห์หน้า" and "จันทร์หน้า" agree', () => {
+    expect(lines[2]).toBe('จ. 14 ก.ย. 69 (มะรืน, สัปดาห์หน้า)');
+    expect(lines[9]).toBe('จ. 21 ก.ย. 69 (อีกสองสัปดาห์)');
   });
 });
 

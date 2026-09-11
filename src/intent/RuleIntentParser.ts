@@ -458,13 +458,17 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
   const attendee = extractAttendee(text, ctx.memberNames);
   const repeat = matchRecurrence(text);
 
-  const title = stripMatched(text, [
+  const stripped = stripMatched(text, [
     ...when.matched,
     ...(attendee ? [attendee.matched] : []),
     ...(repeat ? [repeat.matched] : []),
   ]);
   // A bare date with no subject is not an appointment worth creating.
-  if (title.length < 2) return { kind: 'unknown' };
+  if (stripped.length < 2) return { kind: 'unknown' };
+  // "อีก 5 วันมีนัด 15.00" leaves "มีนัด" — the "have" is not part of the
+  // name, and a card titled "นัด" alone reads better as "นัดหมาย".
+  const unhad = stripped.replace(/^มี(?=นัด)/, '');
+  const title = unhad === 'นัด' ? 'นัดหมาย' : unhad;
 
   const category: EventCategory = guessEventCategory(title);
 
