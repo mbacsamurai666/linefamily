@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import { createCanvas } from '@napi-rs/canvas';
+import { FONTS, registerAppFonts } from './fonts.js';
 
 /**
  * Draws the rich menu image in code instead of shipping a binary asset —
@@ -7,36 +7,9 @@ import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
  * something a script can regenerate deterministically. A 2x3 grid at LINE's
  * full-size rich menu dimensions (2500x1686).
  *
- * @napi-rs/canvas ships with no bundled fonts and does not fall back to a
- * system default for missing families — fillText silently draws nothing
- * rather than erroring, which is exactly what happened the first time this
- * ran (a blank green grid, no labels). A Thai-capable font must be
- * registered by file path before any text is drawn.
+ * Text is set in the app's own faces, registered from assets/fonts before
+ * anything is drawn — see fonts.ts for why they ship with the repo.
  */
-
-const FONT_FAMILY = 'RichMenuFont';
-/** Windows ships Leelawadee (Thai UI font) here by default. */
-const CANDIDATE_FONT_PATHS = [
-  'C:\\Windows\\Fonts\\leelawad.ttf',
-  'C:\\Windows\\Fonts\\tahoma.ttf',
-  '/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf',
-  '/usr/share/fonts/truetype/thai-tlwg/Garuda.ttf',
-];
-
-let fontReady = false;
-function ensureFont(): void {
-  if (fontReady) return;
-  const path = CANDIDATE_FONT_PATHS.find((p) => existsSync(p));
-  if (!path) {
-    throw new Error(
-      'No Thai-capable font found among the known candidate paths. ' +
-        'Set one explicitly by editing CANDIDATE_FONT_PATHS in richmenuImage.ts, ' +
-        'or install Noto Sans Thai and add its path.',
-    );
-  }
-  GlobalFonts.registerFromPath(path, FONT_FAMILY);
-  fontReady = true;
-}
 
 export interface RichMenuCell {
   label: string;
@@ -78,7 +51,7 @@ export function renderRichMenuImage(cells: RichMenuCell[]): Buffer {
   if (cells.length !== COLS * ROWS) {
     throw new Error(`expected ${COLS * ROWS} cells, got ${cells.length}`);
   }
-  ensureFont();
+  registerAppFonts();
 
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext('2d');
@@ -108,14 +81,14 @@ export function renderRichMenuImage(cells: RichMenuCell[]): Buffer {
     ctx.fillRect(cx - 54, cy - (cell.sublabel ? 140 : 100), 108, 8);
 
     ctx.fillStyle = TEXT;
-    ctx.font = `bold 90px ${FONT_FAMILY}`;
+    ctx.font = `90px ${FONTS.display}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(cell.label, cx, cell.sublabel ? cy - 40 : cy);
 
     if (cell.sublabel) {
       ctx.fillStyle = SUBTEXT;
-      ctx.font = `48px ${FONT_FAMILY}`;
+      ctx.font = `48px ${FONTS.body}`;
       ctx.fillText(cell.sublabel, cx, cy + 60);
     }
   });

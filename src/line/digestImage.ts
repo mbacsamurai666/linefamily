@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
+import { createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
 import type { DateTime } from 'luxon';
 import type { JobKind, ReminderJob } from '../reminders/ports.js';
 import { SECTION_LABEL, SECTION_ORDER } from './flex/digest.js';
+import { FONTS, registerAppFonts } from './fonts.js';
 import { formatThaiDate } from './format.js';
 
 /**
@@ -52,30 +53,6 @@ const KIND_COLOR: Record<JobKind, string> = {
 };
 
 const ASSETS = join(process.cwd(), 'assets');
-const DISPLAY = 'DigestDisplay';
-const BODY = 'DigestBody';
-const BODY_BOLD = 'DigestBodyBold';
-
-let fontsReady = false;
-/**
- * @napi-rs/canvas bundles no fonts and silently draws nothing for a missing
- * family, and the container this runs in has no Thai font at all — so the
- * app's own faces ship with the repo (assets/fonts, both OFL).
- */
-function ensureFonts(): void {
-  if (fontsReady) return;
-  const faces: Array<[string, string]> = [
-    ['Prompt-SemiBold.ttf', DISPLAY],
-    ['Sarabun-Regular.ttf', BODY],
-    ['Sarabun-SemiBold.ttf', BODY_BOLD],
-  ];
-  for (const [file, family] of faces) {
-    const path = join(ASSETS, 'fonts', file);
-    if (!existsSync(path)) throw new Error(`Missing font ${path}`);
-    GlobalFonts.registerFromPath(path, family);
-  }
-  fontsReady = true;
-}
 
 export interface DigestImageInput {
   jobs: ReminderJob[];
@@ -84,7 +61,7 @@ export interface DigestImageInput {
 }
 
 export async function renderDigestImage({ jobs, slot }: DigestImageInput): Promise<Buffer> {
-  ensureFonts();
+  registerAppFonts();
 
   const morning = slot.hour < 12;
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
@@ -137,7 +114,7 @@ function layoutBoard(ctx: SKRSContext2D, jobs: ReminderJob[]): BoardLine[] {
 
     lines.push({ text: `${SECTION_LABEL[kind]} (${inKind.length})`, heading: true });
     for (const job of inKind) {
-      ctx.font = `30px ${BODY}`;
+      ctx.font = `30px ${FONTS.body}`;
       const [first, ...rest] = wrap(ctx, job.payload.text, maxWidth, 2);
       lines.push({ text: first ?? '', color: KIND_COLOR[kind] });
       for (const more of rest) lines.push({ text: more });
@@ -236,9 +213,9 @@ function drawSign(ctx: SKRSContext2D, title: string, subtitle: string): void {
 
   ctx.textAlign = 'center';
   ctx.fillStyle = '#fff8f0';
-  ctx.font = `56px ${DISPLAY}`;
+  ctx.font = `56px ${FONTS.display}`;
   ctx.fillText(title, WIDTH / 2, PAD + 92);
-  ctx.font = `28px ${BODY}`;
+  ctx.font = `28px ${FONTS.body}`;
   ctx.globalAlpha = 0.9;
   ctx.fillText(subtitle, WIDTH / 2, PAD + 132);
   ctx.globalAlpha = 1;
@@ -258,14 +235,14 @@ function drawBoard(
   ctx.fillStyle = COLORS.board;
   roundRect(ctx, PAD + 10, top + 10, w - 20, height - 20, 16);
 
-  ctx.font = `26px ${BODY_BOLD}`;
+  ctx.font = `26px ${FONTS.bodyBold}`;
   ctx.fillStyle = COLORS.chalkMuted;
   ctx.fillText(`ทั้งหมด ${total} รายการ`, PAD + 44, top + 54);
 
   let y = top + 104;
   for (const line of lines) {
     if (line.heading) {
-      ctx.font = `26px ${BODY_BOLD}`;
+      ctx.font = `26px ${FONTS.bodyBold}`;
       ctx.fillStyle = COLORS.chalkMuted;
       ctx.fillText(line.text, PAD + 44, y);
     } else {
@@ -275,7 +252,7 @@ function drawBoard(
         ctx.arc(PAD + 54, y - 10, 8, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.font = `30px ${BODY}`;
+      ctx.font = `30px ${FONTS.body}`;
       ctx.fillStyle = COLORS.chalk;
       ctx.fillText(line.text, PAD + 78, y);
     }
@@ -283,7 +260,7 @@ function drawBoard(
   }
 
   if (lines.length === 0) {
-    ctx.font = `32px ${BODY}`;
+    ctx.font = `32px ${FONTS.body}`;
     ctx.fillStyle = COLORS.chalk;
     ctx.fillText('วันนี้ไม่มีอะไรค้างครับ', PAD + 44, top + 120);
   }
@@ -317,7 +294,7 @@ async function drawMascots(
 }
 
 function drawBubble(ctx: SKRSContext2D, text: string, bottom: number): void {
-  ctx.font = `30px ${BODY}`;
+  ctx.font = `30px ${FONTS.body}`;
   const w = ctx.measureText(text).width + 64;
   const h = 72;
   const x = (WIDTH - w) / 2;
