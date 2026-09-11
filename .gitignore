@@ -6,3 +6,6 @@ dist/
 liff/dist/
 liff/node_modules/
 .DS_Store
+
+# Local Claude Code state
+.claude/scheduled_tasks.lock

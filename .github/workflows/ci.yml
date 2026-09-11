@@ -1,0 +1,35 @@
+# Every push: typecheck both halves and run both test suites. The integration
+# suite runs against PGlite in-process, so no database or LINE credentials are
+# needed here — nothing in this workflow reads a secret.
+
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            liff/package-lock.json
+
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+      - run: npx vitest run -c vitest.integration.config.ts
+
+      - run: npm ci
+        working-directory: liff
+      - run: npx tsc --noEmit -p tsconfig.json
+        working-directory: liff

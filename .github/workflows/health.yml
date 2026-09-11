@@ -1,0 +1,42 @@
+# The outside check the bot cannot do for itself.
+#
+# /health answers 503 when reminders have stopped draining, but a process that
+# has died answers nothing at all — which is exactly when nobody would notice,
+# because a missing reminder looks the same as no reminder. This asks from
+# outside, and a failed run is emailed to whoever last pushed this file.
+#
+# Hourly, not every few minutes: digests go out twice a day, so an hour's delay
+# in noticing costs nothing, and a private repo's free Actions minutes (2,000 a
+# month, each run billed as a whole minute) stay mostly free for CI.
+
+name: Bot health
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: GET /health
+        env:
+          HEALTH_URL: https://bot-production-60492.up.railway.app/health
+        run: |
+          # Three tries a minute apart, so a deploy restarting the container
+          # does not read as an outage.
+          for attempt in 1 2 3; do
+            code=$(curl -s -o body.json -w '%{http_code}' --max-time 20 "$HEALTH_URL" || echo 000)
+            if [ "$code" = 200 ]; then
+              cat body.json
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code"
+            cat body.json 2>/dev/null || true
+            echo
+            [ "$attempt" -lt 3 ] && sleep 60
+          done
+          echo "::error::The family bot is not healthy — reminders may not be going out."
+          exit 1
