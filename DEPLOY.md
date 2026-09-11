@@ -67,6 +67,24 @@ Two URLs point at the new host instead of the tunnel:
 2. **LINE Login channel → LIFF → Endpoint URL**
    → `https://<domain>/liff/`
 
+The first one does not need the console at all — the channel access token the
+bot already has can read, set and test it, which is handy when the console
+login has expired:
+
+```bash
+set -a; . ./.env; set +a
+AUTH="Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN"
+curl -s -H "$AUTH" https://api.line.me/v2/bot/channel/webhook/endpoint
+curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"endpoint":"https://<domain>/line/webhook"}' \
+  https://api.line.me/v2/bot/channel/webhook/endpoint
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{}' \
+  https://api.line.me/v2/bot/channel/webhook/test   # expect "statusCode":200
+```
+
+The LIFF endpoint cannot be done this way: it belongs to the separate LINE Login
+channel, whose secret the bot never holds.
+
 Then reinstall the Rich Menu so its "open app" button points at the right
 place:
 
