@@ -34,6 +34,16 @@ export function holidayOn(date: DateTime): string | null {
   return extra?.name ?? null;
 }
 
+/**
+ * Whether anyone has filled in `year`'s announced holidays. Without them the
+ * app still works — it just treats มาฆบูชา as a working day — so this is what
+ * lets `สถานะระบบ` say so, instead of the gap only surfacing when someone's
+ * "next working day" lands on a closed office.
+ */
+export function announcedHolidaysKnown(year: number): boolean {
+  return (EXTRA[String(year)]?.length ?? 0) > 0;
+}
+
 /** Saturday, Sunday, or a public holiday. */
 export function isNonWorkingDay(date: DateTime): boolean {
   return date.weekday >= 6 || holidayOn(date) !== null;

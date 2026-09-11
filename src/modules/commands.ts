@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { computeNetBalances } from './debts.js';
 import { computeExpenseSummary } from './expenseSummary.js';
+import { announcedHolidaysKnown } from '../thai/holidays.js';
 import { computeHealth } from './health.js';
 import { computeNetWorth, listAssets, listDeposits, listLoans } from './loanAssetDeposit.js';
 import {
@@ -349,6 +350,17 @@ async function handleSystemStatus(ctx: CommandContext): Promise<CommandResult> {
       : `ส่งการเตือนล่าสุด: ${report.hoursSinceLastSend} ชม. ที่แล้ว`,
   );
   lines.push(`โควตา push เดือนนี้: ใช้ไป ${report.pushUsed} จาก ~${report.pushQuota}`);
+
+  // The cabinet announces next year's holidays late in the year, so from
+  // November on the gap is worth mentioning before January arrives.
+  const year = ctx.now.year;
+  const missing = [year, ...(ctx.now.month >= 11 ? [year + 1] : [])].filter(
+    (y) => !announcedHolidaysKnown(y),
+  );
+  if (missing.length > 0) {
+    const be = missing.map((y) => y + 543).join(', ');
+    lines.push(`ℹ️ ยังไม่ได้ใส่วันหยุดพิเศษ/จันทรคติของปี ${be} — "วันทำการถัดไป" จะนับวันเหล่านั้นเป็นวันทำงาน`);
+  }
 
   return { reply: lines.join('\n') };
 }

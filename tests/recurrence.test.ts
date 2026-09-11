@@ -69,6 +69,26 @@ describe('Thai public holidays', () => {
     expect(next.toFormat('yyyy-MM-dd')).toBe('2026-12-11');
   });
 
+  it('knows the lunar and substitution days announced for 2569', () => {
+    expect(holidayOn(DateTime.fromISO('2026-05-31'))).toBe('วันวิสาขบูชา');
+    expect(holidayOn(DateTime.fromISO('2026-07-30'))).toBe('วันเข้าพรรษา');
+    // วันพ่อ falls on a Saturday in 2569; the Monday after is the day off.
+    expect(holidayOn(DateTime.fromISO('2026-12-07'))).toBe('วันหยุดชดเชยวันพ่อแห่งชาติ');
+  });
+
+  it('carries a Buddhist holiday through to the next open day', () => {
+    // Tue 28 Jul is the King's birthday, Wed 29 อาสาฬหบูชา, Thu 30 เข้าพรรษา:
+    // something due "the next working day" after Monday 27th lands on Friday.
+    const next = nextBusinessDay(DateTime.fromISO('2026-07-27'));
+    expect(next.toFormat('yyyy-MM-dd')).toBe('2026-07-31');
+  });
+
+  it('does not invent a lunar holiday for a year nobody has announced', () => {
+    // Makha Bucha 2570 is computed as 21 Feb 2027 by some calendars, but the
+    // cabinet has not announced the year — so it is an ordinary Sunday here.
+    expect(holidayOn(DateTime.fromISO('2027-02-21'))).toBeNull();
+  });
+
   it('is reachable from chat as "วันทำการถัดไป"', () => {
     const friday = DateTime.fromISO('2026-09-11T10:00', { zone: 'Asia/Bangkok' });
     const when = parseThaiDateTime('ยื่นเอกสาร วันทำการถัดไป', friday);

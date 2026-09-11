@@ -445,6 +445,17 @@ describe('tryDirectCommand — สถานะระบบ', () => {
     const result = await tryDirectCommand('สถานะระบบ', ctx());
     expect(result?.reply).toContain('ผิดปกติ');
   });
+
+  it('stays quiet about holidays while this year is filled in and next is far off', async () => {
+    const result = await tryDirectCommand('สถานะระบบ', ctx());
+    expect(result?.reply).not.toContain('วันหยุด');
+  });
+
+  it('warns in November that next year\'s holidays are not in yet', async () => {
+    const november = DateTime.fromISO('2026-11-15T10:00', { zone: ZONE });
+    const result = await tryDirectCommand('สถานะระบบ', ctx(november));
+    expect(result?.reply).toContain('ปี 2570');
+  });
 });
 
 describe('tryDirectCommand — บอร์ดงาน', () => {
