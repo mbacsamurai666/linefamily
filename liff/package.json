@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mascots:export": "tsx scripts/export-mascots.tsx"
   },
   "dependencies": {
     "@line/liff": "^2.24.1",

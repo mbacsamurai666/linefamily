@@ -38,6 +38,7 @@ model Family {
   assets        Asset[]
   deposits      Deposit[]
   tasks         Task[]
+  digestImages  DigestImage[]
 }
 
 enum MemberRole {
@@ -85,6 +86,20 @@ enum EventCategory {
   SOCIAL // สังคม
   WORK // งาน
   OTHER // อื่นๆ
+}
+
+/// A rendered digest picture, kept only so LINE has somewhere to fetch it from.
+/// Held in the database rather than in memory so a redeploy does not turn every
+/// digest already in the chat into a broken image; pruned after 30 days.
+model DigestImage {
+  id        String   @id @default(cuid())
+  familyId  String
+  png       Bytes
+  createdAt DateTime @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
 }
 
 model Event {

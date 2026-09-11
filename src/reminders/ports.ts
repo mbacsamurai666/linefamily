@@ -48,8 +48,12 @@ export interface BudgetStore {
 }
 
 export interface Notifier {
-  /** One push carrying every job in the batch. */
-  sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<void>;
+  /**
+   * One push carrying every job in the batch. Returns how many LINE messages
+   * it actually contained — LINE bills per message object, not per push, and
+   * the digest carries a picture alongside its card.
+   */
+  sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<number>;
   sendUrgent(familyId: string, job: ReminderJob): Promise<void>;
 }
 

@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { DateTime } from 'luxon';
 import type { messagingApi } from '@line/bot-sdk';
+import { renderDigestImage } from '../line/digestImage.js';
 import { buildDigest } from '../line/flex/digest.js';
 import type {
   BudgetStore,
@@ -100,6 +101,12 @@ export class LineNotifier implements Notifier {
     private readonly api: messagingApi.MessagingApiClient,
     private readonly prisma: PrismaClient,
     private readonly liffUrl?: string,
+    /**
+     * Where this server answers from, so LINE can fetch the digest picture.
+     * Without it the digest is the card alone, exactly as before.
+     */
+    private readonly baseUrl?: string,
+    private readonly log?: (msg: string, meta?: Record<string, unknown>) => void,
   ) {}
 
   private async groupIdOf(familyId: string): Promise<string | null> {
@@ -110,13 +117,46 @@ export class LineNotifier implements Notifier {
     return family?.lineGroupId ?? null;
   }
 
-  async sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<void> {
+  async sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<number> {
     const to = await this.groupIdOf(familyId);
-    if (!to) return;
-    await this.api.pushMessage({
-      to,
-      messages: [buildDigest(jobs, slot, this.liffUrl)],
+    if (!to) return 0;
+
+    const messages: messagingApi.Message[] = [buildDigest(jobs, slot, this.liffUrl)];
+
+    // The picture is the nice part, not the load-bearing part: if drawing or
+    // storing it fails, the card still goes out on time.
+    const imageUrl = await this.storeDigestImage(familyId, jobs, slot).catch((err) => {
+      this.log?.('digest image failed', { err: String(err) });
+      return null;
     });
+    if (imageUrl) {
+      messages.push({ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl });
+    }
+
+    await this.api.pushMessage({ to, messages });
+    return messages.length;
+  }
+
+  private async storeDigestImage(
+    familyId: string,
+    jobs: ReminderJob[],
+    slot: DateTime,
+  ): Promise<string | null> {
+    if (!this.baseUrl) return null;
+
+    const png = await renderDigestImage({ jobs, slot });
+    const row = await this.prisma.digestImage.create({
+      data: { familyId, png: new Uint8Array(png) },
+      select: { id: true },
+    });
+
+    // Nobody scrolls a family group back a month, and these are the only rows
+    // in the database measured in hundreds of kilobytes.
+    await this.prisma.digestImage.deleteMany({
+      where: { createdAt: { lt: slot.minus({ days: 30 }).toJSDate() } },
+    });
+
+    return `${this.baseUrl.replace(/\/+$/, '')}/digest/${row.id}/board.png`;
   }
 
   async sendUrgent(familyId: string, job: ReminderJob): Promise<void> {

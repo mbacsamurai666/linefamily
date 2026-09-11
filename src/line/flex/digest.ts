@@ -10,7 +10,7 @@ import { formatThaiDate } from '../format.js';
  * message budget with room to spare.
  */
 
-const SECTION_ORDER: JobKind[] = [
+export const SECTION_ORDER: JobKind[] = [
   'MEDICATION',
   'EVENT',
   'TASK',
@@ -23,7 +23,7 @@ const SECTION_ORDER: JobKind[] = [
   'BIRTHDAY',
 ];
 
-const SECTION_LABEL: Record<JobKind, string> = {
+export const SECTION_LABEL: Record<JobKind, string> = {
   MEDICATION: 'ยา',
   EVENT: 'นัดหมาย',
   TASK: 'งานบนบอร์ด',

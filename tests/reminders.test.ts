@@ -64,13 +64,17 @@ class MemoryStores implements JobStore, BudgetStore, Notifier, FamilyStore {
   }
 
   // ---- Notifier
-  async sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<void> {
+  /** Stands in for the real notifier's card + picture, so the budget sees two. */
+  digestMessages = 2;
+
+  async sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<number> {
     this.pushes.push({
       familyId,
       kind: 'digest',
       jobIds: jobs.map((j) => j.id),
       at: slot.toISO() ?? '',
     });
+    return this.digestMessages;
   }
   async sendUrgent(familyId: string, job: ReminderJob): Promise<void> {
     this.pushes.push({ familyId, kind: 'urgent', jobIds: [job.id], at: '' });
@@ -164,9 +168,13 @@ describe('a simulated month of reminders', () => {
       expect(count, `too many pushes on ${day}`).toBeLessThanOrEqual(2);
     }
 
-    // Comfortably inside the monthly quota, with reserve left over.
+    // Comfortably inside the monthly quota, with reserve left over. LINE bills
+    // per message, and each digest is a card plus its picture — so the budget
+    // sees twice the number of pushes, and that still leaves most of the 500.
     expect(digests.length).toBeLessThanOrEqual(62);
-    expect(stores.used.get(`${FAMILY}:2026-09`) ?? 0).toBeLessThanOrEqual(62);
+    const used = stores.used.get(`${FAMILY}:2026-09`) ?? 0;
+    expect(used).toBe(digests.length * stores.digestMessages);
+    expect(used).toBeLessThanOrEqual(150);
 
     // Nothing dropped: every job was delivered, and inside exactly one digest.
     expect(stores.rows.filter((r) => r.status === 'SENT')).toHaveLength(totalJobs);

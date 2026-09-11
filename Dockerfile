@@ -42,6 +42,9 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/liff/dist ./liff/dist
 # Schema and migrations, for `prisma migrate deploy` on boot.
 COPY --from=build /app/src/db ./src/db
+# The digest picture is drawn at runtime: it needs the mascots and, since this
+# image carries no Thai font of its own, the two faces the app uses.
+COPY --from=build /app/assets ./assets
 COPY package.json prisma.config.ts ./
 
 # Whatever the platform assigns wins; this is just the local default.

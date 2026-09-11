@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   const engine = new ReminderEngine({
     jobs: new PrismaJobStore(prisma),
     budget: new PrismaBudgetStore(prisma, cfg.PUSH_MONTHLY_QUOTA),
-    notifier: new LineNotifier(api, prisma, liffUrl),
+    notifier: new LineNotifier(api, prisma, liffUrl, cfg.PUBLIC_BASE_URL, log),
     families: new PrismaFamilyStore(prisma),
     clock: { now: () => DateTime.now().setZone(cfg.TZ) },
     morningHour: cfg.DIGEST_MORNING_HOUR,

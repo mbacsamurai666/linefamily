@@ -203,8 +203,8 @@ export class ReminderEngine {
       return;
     }
 
-    await this.opts.notifier.sendDigest(familyId, jobs, localNow);
-    await this.opts.budget.consume(familyId, ym, 1);
+    const messages = await this.opts.notifier.sendDigest(familyId, jobs, localNow);
+    await this.opts.budget.consume(familyId, ym, Math.max(1, messages));
     await this.opts.jobs.markSent(
       jobs.map((j) => j.id),
       localNow.toJSDate(),

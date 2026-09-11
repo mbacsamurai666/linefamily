@@ -47,6 +47,24 @@ export function createApp(deps: AppDeps) {
     }
   });
 
+  /**
+   * The digest picture, fetched by LINE (and then by every phone in the group)
+   * after the push names this URL. Unguessable id, no listing, and nothing in
+   * it that is not already in the message it belongs to.
+   */
+  app.get('/digest/:id/board.png', async (c) => {
+    const row = await deps.prisma.digestImage.findUnique({
+      where: { id: c.req.param('id') },
+      select: { png: true },
+    });
+    if (!row) return c.text('not found', 404);
+
+    c.header('content-type', 'image/png');
+    // It never changes, and LINE's own cache should keep it out of our queries.
+    c.header('cache-control', 'public, max-age=604800, immutable');
+    return c.body(new Uint8Array(row.png));
+  });
+
   if (deps.liffApi) {
     app.route('/api', createApiRouter(deps.liffApi));
   }

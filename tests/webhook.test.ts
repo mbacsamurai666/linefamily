@@ -104,6 +104,30 @@ describe('GET /health', () => {
   });
 });
 
+describe('GET /digest/:id/board.png', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  const prisma = {
+    digestImage: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'known' ? { png } : null,
+      ),
+    },
+  } as never;
+
+  it('serves the picture LINE was told to fetch', async () => {
+    const res = await buildTestApp({ prisma }).request('/digest/known/board.png');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(png);
+  });
+
+  it('404s on an id that is not a digest of ours', async () => {
+    const res = await buildTestApp({ prisma }).request('/digest/guessed/board.png');
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('DraftStore', () => {
   it('is single use, so a double tap cannot create two rows', () => {
     const store = new DraftStore();
