@@ -298,6 +298,34 @@ describe('repeating appointments', () => {
     expect((jobs[0]?.payload as { text: string }).text).toContain('ทุกวันจันทร์');
   });
 
+  it('reminds on the right weekday for an appointment before 07:00', async () => {
+    // 06:00 Bangkok is 23:00 UTC on Sunday. rrule reads BYDAY on the UTC
+    // calendar, so this used to announce "every Monday" for every Tuesday.
+    await persistDraft(
+      {
+        kind: 'event',
+        title: 'ตักบาตร',
+        startAt: NOW.plus({ days: 3 }).set({ hour: 6, minute: 0 }),
+        allDay: false,
+        category: 'OTHER',
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+      },
+      ctx(),
+    );
+    const event = await db.prisma.event.findFirstOrThrow();
+
+    const texts = (
+      await db.prisma.notificationJob.findMany({
+        where: { kind: 'EVENT', refId: event.id, status: 'PENDING' },
+      })
+    ).map((j) => (j.payload as { text: string }).text);
+
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).toMatch(/ จ\. \d+ .+ 06:00/);
+    }
+  });
+
   it('clearing the repeat drops it back to a single occurrence', async () => {
     await persistDraft(
       {

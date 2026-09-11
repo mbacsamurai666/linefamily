@@ -452,9 +452,69 @@ describe('GET /agenda + GET /events/:id', () => {
     expect(body.items.map((i) => i.title)).toEqual(['ในสัปดาห์']);
   });
 
-  it('rejects a range wider than 31 days', async () => {
+  it('rejects a range wider than a month grid', async () => {
     const res = await authed('/events?from=2026-01-01&to=2026-06-01');
     expect(res.status).toBe(400);
+  });
+
+  it('accepts the 6-week span a month board needs', async () => {
+    const res = await authed('/events?from=2026-08-30&to=2026-10-10T23:59:59');
+    expect(res.status).toBe(200);
+  });
+
+  it('puts a repeating appointment on every day it repeats, first entered or not', async () => {
+    // First entered in August; the board is looking at the week of 14 Sep.
+    await db.prisma.event.create({
+      data: {
+        familyId,
+        title: 'กายภาพแม่',
+        category: 'MEDICAL',
+        startAt: DateTime.fromISO('2026-08-03T09:00', { zone: ZONE }).toJSDate(),
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+      },
+    });
+
+    const body = (await authed('/events?from=2026-09-07&to=2026-09-20T23:59:59').then((r) =>
+      r.json(),
+    )) as { items: Array<{ title: string; startAt: string; repeats: boolean }> };
+
+    const days = body.items.map((i) => DateTime.fromISO(i.startAt, { zone: ZONE }).toFormat('ccc dd HH:mm'));
+    expect(days).toEqual(['Mon 07 09:00', 'Mon 14 09:00']);
+    expect(body.items.every((i) => i.repeats)).toBe(true);
+  });
+
+  it('keeps an early-morning weekly appointment on its own weekday', async () => {
+    // 06:00 Bangkok is 23:00 UTC the day before — the case that used to
+    // turn "ทุกวันจันทร์" into every Tuesday.
+    await db.prisma.event.create({
+      data: {
+        familyId,
+        title: 'ตักบาตร',
+        category: 'OTHER',
+        startAt: DateTime.fromISO('2026-09-07T06:00', { zone: ZONE }).toJSDate(),
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+      },
+    });
+
+    const body = (await authed('/events?from=2026-09-07&to=2026-09-20T23:59:59').then((r) =>
+      r.json(),
+    )) as { items: Array<{ startAt: string }> };
+
+    expect(
+      body.items.map((i) => DateTime.fromISO(i.startAt, { zone: ZONE }).toFormat('ccc HH:mm')),
+    ).toEqual(['Mon 06:00', 'Mon 06:00']);
+  });
+
+  it('names the public holidays inside the range', async () => {
+    const body = (await authed('/events?from=2026-12-01&to=2026-12-12T23:59:59').then((r) =>
+      r.json(),
+    )) as { holidays: Array<{ date: string; name: string }> };
+
+    expect(body.holidays).toEqual([
+      { date: '2026-12-05', name: 'วันพ่อแห่งชาติ' },
+      { date: '2026-12-07', name: 'วันหยุดชดเชยวันพ่อแห่งชาติ' },
+      { date: '2026-12-10', name: 'วันรัฐธรรมนูญ' },
+    ]);
   });
 
   it('cannot fetch another family\'s event', async () => {

@@ -46,6 +46,14 @@ export interface EventSummary {
   endAt: string | null;
   allDay: boolean;
   location: string | null;
+  /** A repeating appointment appears once per occurrence, all sharing `id`. */
+  repeats: boolean;
+}
+
+export interface Holiday {
+  /** "YYYY-MM-DD". */
+  date: string;
+  name: string;
 }
 
 export interface EventDetail {
@@ -193,7 +201,7 @@ export const api = {
   event: (id: string) => request<EventDetail>(`/events/${id}`),
   /** `from`/`to` are "YYYY-MM-DD" or full local datetime strings. */
   events: (from: string, to: string) =>
-    request<{ items: EventSummary[] }>(
+    request<{ items: EventSummary[]; holidays: Holiday[] }>(
       `/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
   expenseSummary: (month?: string) =>

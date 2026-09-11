@@ -1,16 +1,11 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
-// rrule ships CommonJS, so Node's ESM loader cannot see its named exports —
-// a named import typechecks and then throws at boot. The default import is
-// the whole module.exports.
-import rrulePkg from 'rrule';
-
-const { rrulestr } = rrulePkg;
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
 import { formatRelativeDay, formatThaiDateTime } from '../line/format.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import { formatSatang } from '../thai/number.js';
 import { recurrenceLabel } from '../thai/recurrence.js';
+import { expandOccurrences } from './occurrences.js';
 
 /**
  * Job generation. Every module that owns something with a due date calls in
@@ -144,9 +139,6 @@ const REPEAT_MAX_OCCURRENCES = 4;
  * its RRULE. Only a few are scheduled at a time — the rest are picked up by
  * the daily refresh (see refreshRecurring), which keeps the job table from
  * filling with reminders for months nobody has reached yet.
- *
- * Thailand has no daylight saving, so carrying the UTC instant forward keeps
- * every occurrence at the same local clock time.
  */
 function eventOccurrences(
   startAt: Date,
@@ -157,11 +149,14 @@ function eventOccurrences(
   if (!rrule) return [DateTime.fromJSDate(startAt, { zone })];
 
   try {
-    const rule = rrulestr(`RRULE:${rrule}`, { dtstart: startAt });
-    return rule
-      .between(now.toJSDate(), now.plus({ days: REPEAT_WINDOW_DAYS }).toJSDate(), true)
-      .slice(0, REPEAT_MAX_OCCURRENCES)
-      .map((d) => DateTime.fromJSDate(d, { zone }));
+    return expandOccurrences(
+      startAt,
+      rrule,
+      zone,
+      now,
+      now.plus({ days: REPEAT_WINDOW_DAYS }),
+      REPEAT_MAX_OCCURRENCES,
+    );
   } catch {
     // A malformed rule must not take the appointment down with it.
     return [DateTime.fromJSDate(startAt, { zone })];

@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Hono } from 'hono';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
+import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import {
@@ -337,27 +338,13 @@ export function createApiRouter(deps: ApiDeps) {
     const to = DateTime.fromISO(c.req.query('to') ?? '', { zone: member.timezone });
     if (!from.isValid || !to.isValid) return c.json({ error: 'from and to must be ISO dates' }, 400);
 
-    // A week-timeline view is the only caller — cap the range so nobody can
-    // ask for the whole family's history in one request.
-    if (to.diff(from, 'days').days > 31) return c.json({ error: 'range too wide' }, 400);
+    // The widest caller is the month board's 6-week grid — cap the range so
+    // nobody can ask for the whole family's history in one request.
+    if (to.diff(from, 'days').days > MAX_RANGE_DAYS) {
+      return c.json({ error: 'range too wide' }, 400);
+    }
 
-    const events = await deps.prisma.event.findMany({
-      where: { familyId: member.familyId, startAt: { gte: from.toJSDate(), lte: to.toJSDate() } },
-      orderBy: { startAt: 'asc' },
-      take: 300,
-    });
-
-    return c.json({
-      items: events.map((e) => ({
-        id: e.id,
-        title: e.title,
-        category: e.category,
-        startAt: e.startAt.toISOString(),
-        endAt: e.endAt ? e.endAt.toISOString() : null,
-        allDay: e.allDay,
-        location: e.location,
-      })),
-    });
+    return c.json(await listCalendar(deps.prisma, member.familyId, from, to, member.timezone));
   });
 
   app.get('/events/:id', async (c) => {

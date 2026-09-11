@@ -11,6 +11,7 @@ import {
   type EventDetail,
   type EventSummary,
   type ExpenseSummary,
+  type Holiday,
   type Loan,
   type MedicationItem,
   type Me,
@@ -76,6 +77,8 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('dashboard');
+  // A day tapped on the dashboard's board, for the calendar tab to open on.
+  const [calendarDay, setCalendarDay] = useState<string | null>(null);
 
   useEffect(() => {
     api.me().then(setMe).catch((e: Error) => setError(e.message));
@@ -94,9 +97,18 @@ export default function App() {
       </header>
 
       <main className="content">
-        {tab === 'dashboard' && <DashboardTab timezone={me.timezone} displayName={me.displayName} />}
+        {tab === 'dashboard' && (
+          <DashboardTab
+            timezone={me.timezone}
+            displayName={me.displayName}
+            onOpenDay={(key) => {
+              setCalendarDay(key);
+              setTab('agenda');
+            }}
+          />
+        )}
         {tab === 'tasks' && <TasksTab timezone={me.timezone} />}
-        {tab === 'agenda' && <CalendarTab timezone={me.timezone} />}
+        {tab === 'agenda' && <CalendarTab timezone={me.timezone} initialDay={calendarDay} />}
         {tab === 'money' && <MoneyTab />}
         {tab === 'shopping' && <ShoppingTab />}
         {tab === 'manage' && <ManageTab />}
@@ -113,7 +125,15 @@ export default function App() {
             ['manage', '⚙️', 'จัดการ'],
           ] as const
         ).map(([key, icon, label]) => (
-          <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>
+          <button
+            key={key}
+            className={tab === key ? 'active' : ''}
+            onClick={() => {
+              // The tab bar always opens the calendar on today.
+              if (key === 'agenda') setCalendarDay(null);
+              setTab(key);
+            }}
+          >
             <span className="tab-icon">{icon}</span>
             <span className="tab-label">{label}</span>
           </button>
@@ -207,15 +227,32 @@ function UpcomingSection({ heading, items }: { heading: string; items: AgendaIte
   );
 }
 
-function DashboardTab({ timezone, displayName }: { timezone: string; displayName: string }) {
+function DashboardTab({
+  timezone,
+  displayName,
+  onOpenDay,
+}: {
+  timezone: string;
+  displayName: string;
+  onOpenDay: (key: string) => void;
+}) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [incomeAmount, setIncomeAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const [board, setBoard] = useState<{ events: EventSummary[]; holidays: Holiday[] } | null>(null);
+
+  const todayKey = useMemo(() => dayKey(new Date().toISOString(), timezone), [timezone]);
 
   const load = () => api.dashboard().then(setData).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
+    const [from, to] = monthRange(todayKey.slice(0, 7));
+    // The board is a nicety on this page — if it fails, the rest still stands.
+    api
+      .events(from, to)
+      .then((r) => setBoard({ events: r.items, holidays: r.holidays }))
+      .catch(() => setBoard({ events: [], holidays: [] }));
   }, []);
 
   const addIncome = async (e: React.FormEvent) => {
@@ -287,6 +324,18 @@ function DashboardTab({ timezone, displayName }: { timezone: string; displayName
               style={{ width: `${totalToday === 0 ? 0 : (tasks.doneToday / totalToday) * 100}%` }}
             />
           </div>
+        </div>
+
+        <div className="room-calendar">
+          <CalendarBoard
+            compact
+            monthKey={todayKey.slice(0, 7)}
+            todayKey={todayKey}
+            events={board?.events ?? null}
+            holidays={board?.holidays ?? []}
+            timezone={timezone}
+            onSelect={onOpenDay}
+          />
         </div>
 
         <div className="room-scene">
@@ -388,147 +437,353 @@ function DashboardTab({ timezone, displayName }: { timezone: string; displayName
   );
 }
 
-interface CalendarTabProps {
+interface CalendarBoardProps {
+  /** "YYYY-MM". */
+  monthKey: string;
+  todayKey: string;
+  selected?: string;
+  /** Null while the month is still loading. */
+  events: EventSummary[] | null;
+  holidays: Holiday[];
   timezone: string;
+  onSelect: (key: string) => void;
+  /** Omit to hide the month arrows (the dashboard shows only this month). */
+  onMonth?: (delta: number) => void;
+  /** Dots instead of titles — for the small copy hanging in the dashboard room. */
+  compact?: boolean;
 }
 
-function CalendarTab({ timezone }: CalendarTabProps) {
-  const [items, setItems] = useState<AgendaItem[] | null>(null);
+/**
+ * The calendar board: a paper wall calendar, the kind that hangs in a Thai
+ * kitchen — Sundays and public holidays in red, the holiday's name written
+ * under the date, and each day's appointments pencilled into the square.
+ *
+ * It reads appointments on the day they happen (GET /events), never reminder
+ * times — see modules/calendar.ts for why the old dot grid got that wrong.
+ */
+function CalendarBoard({
+  monthKey,
+  todayKey,
+  selected,
+  events,
+  holidays,
+  timezone,
+  onSelect,
+  onMonth,
+  compact = false,
+}: CalendarBoardProps) {
+  const [year, month] = monthKey.split('-').map(Number) as [number, number];
+  const firstWeekday = new Date(year, month - 1, 1).getDay(); // 0 = Sunday
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const [monthName] = thaiMonthYear(year, month - 1).split(' ');
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, EventSummary[]>();
+    for (const ev of events ?? []) {
+      const key = dayKey(ev.startAt, timezone);
+      const bucket = map.get(key);
+      if (bucket) bucket.push(ev);
+      else map.set(key, [ev]);
+    }
+    // All-day first, then by time — the order someone would write them in.
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startAt.localeCompare(b.startAt));
+    }
+    return map;
+  }, [events, timezone]);
+
+  const holidayByDay = useMemo(() => new Map(holidays.map((h) => [h.date, h.name])), [holidays]);
+
+  const cells: Array<{ key: string; day: number; weekday: number } | null> = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    cells.push({
+      key: `${monthKey}-${String(day).padStart(2, '0')}`,
+      day,
+      weekday: (firstWeekday + day - 1) % 7,
+    });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const maxChips = 2;
+
+  return (
+    <div className={`board-cal${compact ? ' board-cal-compact' : ''}`}>
+      <div className="board-rings" aria-hidden="true">
+        {Array.from({ length: 6 }, (_, i) => (
+          <span key={i} />
+        ))}
+      </div>
+
+      <div className="board-head">
+        {onMonth && (
+          <button type="button" className="board-nav" onClick={() => onMonth(-1)} aria-label="เดือนก่อนหน้า">
+            ‹
+          </button>
+        )}
+        <div className="board-title">
+          <span className="board-month">{monthName}</span>
+          <span className="board-year">พ.ศ. {year + 543}</span>
+        </div>
+        {onMonth && (
+          <button type="button" className="board-nav" onClick={() => onMonth(1)} aria-label="เดือนถัดไป">
+            ›
+          </button>
+        )}
+      </div>
+
+      <div className="board-weekdays">
+        {WEEKDAY_LABELS.map((w, i) => (
+          <div key={w} className={i === 0 ? 'board-sun' : i === 6 ? 'board-sat' : ''}>
+            {w}
+          </div>
+        ))}
+      </div>
+
+      <div className="board-grid">
+        {cells.map((cell, i) => {
+          if (!cell) return <div key={`blank-${i}`} className="board-day board-day-blank" />;
+
+          const dayEvents = byDay.get(cell.key) ?? [];
+          const holiday = holidayByDay.get(cell.key);
+          const red = cell.weekday === 0 || holiday !== undefined;
+          const extra = dayEvents.length - maxChips;
+
+          return (
+            <button
+              type="button"
+              key={cell.key}
+              className={[
+                'board-day',
+                red ? 'board-day-red' : cell.weekday === 6 ? 'board-day-sat' : '',
+                cell.key === todayKey ? 'board-day-today' : '',
+                cell.key === selected ? 'board-day-selected' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              onClick={() => onSelect(cell.key)}
+              aria-label={[
+                `วันที่ ${cell.day}`,
+                holiday,
+                dayEvents.length > 0 ? `${dayEvents.length} นัด` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            >
+              <span className="board-num">{cell.day}</span>
+
+              {compact ? (
+                dayEvents.length > 0 && (
+                  <span className="board-dots">
+                    {dayEvents.slice(0, 3).map((ev, j) => (
+                      <span key={j} style={{ background: eventCategoryColor(ev.category) }} />
+                    ))}
+                  </span>
+                )
+              ) : (
+                <>
+                  {holiday && <span className="board-holiday">{holiday}</span>}
+                  {dayEvents.slice(0, maxChips).map((ev, j) => (
+                    <span
+                      key={`${ev.id}-${j}`}
+                      className="board-chip"
+                      style={{ '--chip': eventCategoryColor(ev.category) } as React.CSSProperties}
+                    >
+                      {ev.title}
+                    </span>
+                  ))}
+                  {extra > 0 && <span className="board-more">+{extra}</span>}
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {events === null && <div className="board-loading">กำลังโหลด...</div>}
+    </div>
+  );
+}
+
+/** The labelled facts of one appointment, shared by the board and the week view. */
+function EventDetailRows({ detail }: { detail: EventDetail }) {
+  return (
+    <>
+      <div className="agenda-detail-row">
+        <span className="muted">ประเภท</span>
+        <span>{eventCategoryLabel(detail.category)}</span>
+      </div>
+      <div className="agenda-detail-row">
+        <span className="muted">เวลา</span>
+        <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
+      </div>
+      {detail.rrule && (
+        <div className="agenda-detail-row">
+          <span className="muted">ทำซ้ำ</span>
+          <span>{repeatLabel(detail.rrule)}</span>
+        </div>
+      )}
+      {detail.location && (
+        <div className="agenda-detail-row">
+          <span className="muted">สถานที่</span>
+          <span>{detail.location}</span>
+        </div>
+      )}
+      {detail.attendeeNames.length > 0 && (
+        <div className="agenda-detail-row">
+          <span className="muted">สำหรับ</span>
+          <span>{detail.attendeeNames.join(', ')}</span>
+        </div>
+      )}
+      {detail.note && (
+        <div className="agenda-detail-row">
+          <span className="muted">หมายเหตุ</span>
+          <span>{detail.note}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** "YYYY-MM" -> the ISO bounds of that whole month, for GET /events. */
+function monthRange(monthKey: string): [string, string] {
+  const [y, m] = monthKey.split('-').map(Number) as [number, number];
+  const last = new Date(y, m, 0).getDate();
+  return [`${monthKey}-01T00:00:00`, `${monthKey}-${String(last).padStart(2, '0')}T23:59:59`];
+}
+
+interface CalendarTabProps {
+  timezone: string;
+  /** Day to open on — set when the dashboard's board was tapped. */
+  initialDay?: string | null;
+}
+
+function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
+  const todayKey = useMemo(() => dayKey(new Date().toISOString(), timezone), [timezone]);
+
+  // The selected day is the one source of truth: the board shows its month,
+  // the week view its week, and the panel below its appointments.
+  const [selected, setSelected] = useState<string>(initialDay ?? todayKey);
+  const [calView, setCalView] = useState<'board' | 'week'>('board');
+  const [monthData, setMonthData] = useState<{
+    key: string;
+    events: EventSummary[];
+    holidays: Holiday[];
+  } | null>(null);
+  const [reminders, setReminders] = useState<AgendaItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAddEvent, setShowAddEvent] = useState(false);
-  const [calView, setCalView] = useState<'month' | 'week'>('month');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, EventDetail>>({});
   const [detailError, setDetailError] = useState<string | null>(null);
   const [editingEvent, setEditingEvent] = useState<{ id: string; detail: EventDetail } | null>(null);
 
-  const todayKey = useMemo(() => dayKey(new Date().toISOString(), timezone), [timezone]);
-  const [cursor, setCursor] = useState(() => {
-    const d = new Date();
-    return { year: d.getFullYear(), month: d.getMonth() };
-  });
-  const [selected, setSelected] = useState<string>(todayKey);
+  const monthKey = selected.slice(0, 7);
 
-  const load = () => api.agenda().then((r) => setItems(r.items)).catch((e: Error) => setError(e.message));
-  useEffect(() => {
-    load();
-  }, []);
-
-  const byDay = useMemo(() => {
-    const map = new Map<string, AgendaItem[]>();
-    for (const item of items ?? []) {
-      const key = dayKey(item.dueAt, timezone);
-      const bucket = map.get(key);
-      if (bucket) bucket.push(item);
-      else map.set(key, [item]);
-    }
-    return map;
-  }, [items, timezone]);
-
-  if (error) return <p className="error">{error}</p>;
-  if (!items) return <p className="loading">กำลังโหลด...</p>;
-
-  const { year, month } = cursor;
-  const firstWeekday = new Date(year, month, 1).getDay(); // 0 = Sunday
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-  const cells: Array<{ key: string; day: number } | null> = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push(null);
-  for (let day = 1; day <= daysInMonth; day++) {
-    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    cells.push({ key, day });
-  }
-
-  const changeMonth = (delta: number) => {
-    const next = new Date(year, month + delta, 1);
-    setCursor({ year: next.getFullYear(), month: next.getMonth() });
+  const loadMonth = () => {
+    const [from, to] = monthRange(monthKey);
+    return api
+      .events(from, to)
+      .then((r) => setMonthData({ key: monthKey, events: r.items, holidays: r.holidays }))
+      .catch((e: Error) => setError(e.message));
   };
 
-  const selectedItems = [...(byDay.get(selected) ?? [])].sort((a, b) =>
-    a.dueAt.localeCompare(b.dueAt),
-  );
+  // Bills, documents, medicine and the rest have a due date but no Event row,
+  // so they still come from the reminder queue — every kind except EVENT,
+  // which the board already shows on its real day.
+  const loadReminders = () =>
+    api
+      .agenda()
+      .then((r) => setReminders(r.items.filter((i) => i.kind !== 'EVENT')))
+      .catch((e: Error) => setError(e.message));
 
-  const toggleDetail = async (item: AgendaItem) => {
-    if (item.kind !== 'EVENT') return;
-    if (expandedId === item.id) {
-      setExpandedId(null);
+  const reload = () => Promise.all([loadMonth(), loadReminders()]);
+
+  useEffect(() => {
+    loadMonth();
+  }, [monthKey]);
+  useEffect(() => {
+    loadReminders();
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+
+  const current = monthData?.key === monthKey ? monthData : null;
+  const holidays = current?.holidays ?? [];
+
+  const changeMonth = (delta: number) => {
+    const [y, m] = monthKey.split('-').map(Number) as [number, number];
+    const next = new Date(y, m - 1 + delta, 1);
+    const nextKey = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+    setSelected(todayKey.startsWith(nextKey) ? todayKey : `${nextKey}-01`);
+    setExpandedKey(null);
+  };
+
+  const dayEvents = (current?.events ?? []).filter((e) => dayKey(e.startAt, timezone) === selected);
+  const dayReminders = reminders
+    .filter((r) => dayKey(r.dueAt, timezone) === selected)
+    .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  const holidayName = holidays.find((h) => h.date === selected)?.name;
+
+  const toggleEvent = async (ev: EventSummary, rowKey: string) => {
+    if (expandedKey === rowKey) {
+      setExpandedKey(null);
       return;
     }
-    setExpandedId(item.id);
-    if (!details[item.refId]) {
+    setExpandedKey(rowKey);
+    if (!details[ev.id]) {
       try {
-        const detail = await api.event(item.refId);
-        setDetails((prev) => ({ ...prev, [item.refId]: detail }));
+        const detail = await api.event(ev.id);
+        setDetails((prev) => ({ ...prev, [ev.id]: detail }));
       } catch (err) {
         setDetailError((err as Error).message);
       }
     }
   };
 
+  const forget = (id: string) =>
+    setDetails((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+
+  const total = dayEvents.length + dayReminders.length;
+
   return (
     <div>
       <div className="cal-view-toggle">
-        <button className={calView === 'month' ? 'active' : ''} onClick={() => setCalView('month')}>
-          เดือน
+        <button className={calView === 'board' ? 'active' : ''} onClick={() => setCalView('board')}>
+          บอร์ดเดือน
         </button>
         <button className={calView === 'week' ? 'active' : ''} onClick={() => setCalView('week')}>
           สัปดาห์
         </button>
       </div>
 
-      {calView === 'month' ? (
-        <>
-          <div className="cal-header">
-            <button className="cal-nav" onClick={() => changeMonth(-1)} aria-label="เดือนก่อนหน้า">
-              ‹
-            </button>
-            <div className="cal-title">{thaiMonthYear(year, month)}</div>
-            <button className="cal-nav" onClick={() => changeMonth(1)} aria-label="เดือนถัดไป">
-              ›
-            </button>
-          </div>
-
-          <div className="cal-weekdays">
-            {WEEKDAY_LABELS.map((w) => (
-              <div key={w} className="cal-weekday">
-                {w}
-              </div>
-            ))}
-          </div>
-
-          <div className="cal-grid">
-            {cells.map((cell, i) => {
-              if (!cell) return <div key={`blank-${i}`} className="cal-cell cal-cell-empty" />;
-              const count = byDay.get(cell.key)?.length ?? 0;
-              const isToday = cell.key === todayKey;
-              const isSelected = cell.key === selected;
-              return (
-                <button
-                  key={cell.key}
-                  className={[
-                    'cal-cell',
-                    isToday ? 'cal-cell-today' : '',
-                    isSelected ? 'cal-cell-selected' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  onClick={() => setSelected(cell.key)}
-                >
-                  <span>{cell.day}</span>
-                  {count > 0 && <span className="cal-dot" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
+      {calView === 'board' ? (
+        <CalendarBoard
+          monthKey={monthKey}
+          todayKey={todayKey}
+          selected={selected}
+          events={current?.events ?? null}
+          holidays={holidays}
+          timezone={timezone}
+          onSelect={(key) => {
+            setSelected(key);
+            setExpandedKey(null);
+          }}
+          onMonth={changeMonth}
+        />
       ) : (
         <WeekView timezone={timezone} selected={selected} todayKey={todayKey} onSelectDay={setSelected} />
       )}
 
       <div className="cal-detail">
         <div className="cal-detail-heading">
-          {selected === todayKey ? 'วันนี้' : selected}
-          {selectedItems.length > 0 && ` (${selectedItems.length})`}
+          {selected === todayKey ? 'วันนี้' : thaiShortDayMonth(selected)}
+          {total > 0 && ` (${total})`}
+          {holidayName && <span className="cal-detail-holiday"> · {holidayName}</span>}
         </div>
 
         {showAddEvent ? (
@@ -538,7 +793,7 @@ function CalendarTab({ timezone }: CalendarTabProps) {
             onCancel={() => setShowAddEvent(false)}
             onAdded={async () => {
               setShowAddEvent(false);
-              await load();
+              await reload();
             }}
           />
         ) : editingEvent ? (
@@ -549,14 +804,10 @@ function CalendarTab({ timezone }: CalendarTabProps) {
             onCancel={() => setEditingEvent(null)}
             onAdded={async () => {
               // The detail cache holds the pre-edit copy, so drop it.
-              setDetails((prev) => {
-                const next = { ...prev };
-                delete next[editingEvent.id];
-                return next;
-              });
+              forget(editingEvent.id);
               setEditingEvent(null);
-              setExpandedId(null);
-              await load();
+              setExpandedKey(null);
+              await reload();
             }}
           />
         ) : (
@@ -565,29 +816,32 @@ function CalendarTab({ timezone }: CalendarTabProps) {
           </button>
         )}
 
-        {selectedItems.length === 0 ? (
-          <p className="empty">ไม่มีอะไรวันนี้ครับ</p>
+        {total === 0 ? (
+          <p className="empty">ไม่มีนัดวันนี้ครับ</p>
         ) : (
           <ul className="list">
-            {selectedItems.map((item) => {
-              const isEvent = item.kind === 'EVENT';
-              const isExpanded = expandedId === item.id;
-              const detail = details[item.refId];
+            {dayEvents.map((ev) => {
+              const rowKey = `${ev.id}|${ev.startAt}`;
+              const isExpanded = expandedKey === rowKey;
+              const detail = details[ev.id];
               return (
-                <li key={item.id} className="agenda-item-wrap">
-                  <div
-                    className={`agenda-item${isEvent ? ' agenda-item-clickable' : ''}`}
-                    onClick={() => toggleDetail(item)}
-                  >
-                    <span className="badge">{kindLabel(item.kind)}</span>
+                <li key={rowKey} className="agenda-item-wrap">
+                  <div className="agenda-item agenda-item-clickable" onClick={() => toggleEvent(ev, rowKey)}>
+                    <span className="event-swatch" style={{ background: eventCategoryColor(ev.category) }} />
                     <div className="agenda-text">
-                      <div>{item.text}</div>
-                      <div className="muted">{thaiTimeOnly(item.dueAt)}</div>
+                      <div>
+                        {ev.title}
+                        {ev.repeats && <span className="muted"> 🔁</span>}
+                      </div>
+                      <div className="muted">
+                        {ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt)}
+                        {ev.location ? ` · ${ev.location}` : ''}
+                      </div>
                     </div>
-                    {isEvent && <span className="agenda-chevron">{isExpanded ? '▾' : '▸'}</span>}
+                    <span className="agenda-chevron">{isExpanded ? '▾' : '▸'}</span>
                   </div>
 
-                  {isEvent && isExpanded && (
+                  {isExpanded && (
                     <div className="agenda-detail">
                       {detailError ? (
                         <p className="error">{detailError}</p>
@@ -595,47 +849,20 @@ function CalendarTab({ timezone }: CalendarTabProps) {
                         <p className="loading">กำลังโหลด...</p>
                       ) : (
                         <>
-                          <div className="agenda-detail-row">
-                            <span className="muted">ประเภท</span>
-                            <span>{eventCategoryLabel(detail.category)}</span>
-                          </div>
-                          <div className="agenda-detail-row">
-                            <span className="muted">เวลา</span>
-                            <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
-                          </div>
+                          <EventDetailRows detail={detail} />
                           {detail.rrule && (
-                            <div className="agenda-detail-row">
-                              <span className="muted">ทำซ้ำ</span>
-                              <span>{repeatLabel(detail.rrule)}</span>
-                            </div>
-                          )}
-                          {detail.location && (
-                            <div className="agenda-detail-row">
-                              <span className="muted">สถานที่</span>
-                              <span>{detail.location}</span>
-                            </div>
-                          )}
-                          {detail.attendeeNames.length > 0 && (
-                            <div className="agenda-detail-row">
-                              <span className="muted">สำหรับ</span>
-                              <span>{detail.attendeeNames.join(', ')}</span>
-                            </div>
-                          )}
-                          {detail.note && (
-                            <div className="agenda-detail-row">
-                              <span className="muted">หมายเหตุ</span>
-                              <span>{detail.note}</span>
-                            </div>
+                            <div className="muted">แก้ไขหรือลบจะมีผลกับทุกครั้งที่นัดนี้เกิดซ้ำ</div>
                           )}
                           <RowActions
                             onEdit={() => {
-                              setEditingEvent({ id: item.refId, detail });
+                              setEditingEvent({ id: ev.id, detail });
                               setShowAddEvent(false);
                             }}
                             onDelete={async () => {
-                              await api.deleteEvent(item.refId);
-                              setExpandedId(null);
-                              await load();
+                              await api.deleteEvent(ev.id);
+                              forget(ev.id);
+                              setExpandedKey(null);
+                              await reload();
                             }}
                           />
                         </>
@@ -645,6 +872,16 @@ function CalendarTab({ timezone }: CalendarTabProps) {
                 </li>
               );
             })}
+
+            {dayReminders.map((item) => (
+              <li key={item.id} className="agenda-item">
+                <span className="badge">{kindLabel(item.kind)}</span>
+                <div className="agenda-text">
+                  <div>{item.text}</div>
+                  <div className="muted">เตือน {thaiTimeOnly(item.dueAt)}</div>
+                </div>
+              </li>
+            ))}
           </ul>
         )}
       </div>
@@ -860,38 +1097,7 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
             <p className="loading">กำลังโหลด...</p>
           ) : (
             <>
-              <div className="agenda-detail-row">
-                <span className="muted">ประเภท</span>
-                <span>{eventCategoryLabel(detail.category)}</span>
-              </div>
-              <div className="agenda-detail-row">
-                <span className="muted">เวลา</span>
-                <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
-              </div>
-              {detail.rrule && (
-                <div className="agenda-detail-row">
-                  <span className="muted">ทำซ้ำ</span>
-                  <span>{repeatLabel(detail.rrule)}</span>
-                </div>
-              )}
-              {detail.location && (
-                <div className="agenda-detail-row">
-                  <span className="muted">สถานที่</span>
-                  <span>{detail.location}</span>
-                </div>
-              )}
-              {detail.attendeeNames.length > 0 && (
-                <div className="agenda-detail-row">
-                  <span className="muted">สำหรับ</span>
-                  <span>{detail.attendeeNames.join(', ')}</span>
-                </div>
-              )}
-              {detail.note && (
-                <div className="agenda-detail-row">
-                  <span className="muted">หมายเหตุ</span>
-                  <span>{detail.note}</span>
-                </div>
-              )}
+              <EventDetailRows detail={detail} />
               {editing ? (
                 <AddEventForm
                   selectedDay={dayKey(detail.startAt, timezone)}

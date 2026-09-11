@@ -518,6 +518,267 @@ select {
   width: 64px;
 }
 
+/* -------------------------------------------------- calendar board
+ * A paper wall calendar: spiral rings, a pink header band, and squares with
+ * the appointments written in. Sundays and public holidays go red, the way
+ * every Thai kitchen calendar marks them. */
+
+.board-cal {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 0 8px 10px;
+  margin: 14px 0 16px;
+}
+
+.board-rings {
+  position: absolute;
+  top: -9px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.board-rings span {
+  width: 8px;
+  height: 20px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #9d8a93, #e8dde2 45%, #9d8a93);
+  box-shadow: 0 1px 1px rgba(74, 54, 64, 0.25);
+}
+
+.board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--brand);
+  color: white;
+  margin: 0 -8px 8px;
+  padding: 16px 10px 10px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.board-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+}
+
+.board-month {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.board-year {
+  font-size: 12px;
+  opacity: 0.85;
+  letter-spacing: 0.04em;
+}
+
+.board-nav {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.board-nav:active {
+  transform: scale(0.92);
+}
+
+.board-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-bottom: 4px;
+}
+
+.board-sun {
+  color: var(--danger);
+}
+
+.board-sat {
+  color: #3d6fd1;
+}
+
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.board-day {
+  position: relative;
+  min-height: 74px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px 2px 4px;
+  border: none;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-family: inherit;
+  text-align: left;
+  color: var(--text);
+}
+
+.board-day:active {
+  background: var(--surface-muted);
+}
+
+.board-day-blank {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--surface-muted) 0 6px,
+    var(--surface) 6px 12px
+  );
+}
+
+.board-num {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-day-red .board-num {
+  color: var(--danger);
+}
+
+.board-day-sat .board-num {
+  color: #3d6fd1;
+}
+
+.board-day-today .board-num {
+  background: var(--brand);
+  color: white;
+  border-radius: 50%;
+}
+
+.board-day-selected {
+  background: var(--brand-tint);
+  box-shadow: inset 0 0 0 2px var(--brand);
+  z-index: 1;
+}
+
+.board-holiday {
+  font-size: 9px;
+  line-height: 1.2;
+  color: var(--danger);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.board-chip {
+  display: block;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 3px;
+  border-radius: 4px;
+  border-left: 3px solid var(--chip);
+  background: #f4f4f4;
+  background: color-mix(in srgb, var(--chip) 16%, white);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  /* Clipped, not ellipsised: in a 48px square the "…" would eat two of the
+     four or five letters that fit. The full title is one tap away. */
+  text-overflow: clip;
+}
+
+.board-more {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-left: 3px;
+}
+
+.board-loading {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding-top: 8px;
+}
+
+/* The small copy hanging in the dashboard room: dots, no titles. */
+
+.board-cal-compact {
+  margin: 20px 0 4px;
+  padding-bottom: 8px;
+}
+
+.board-cal-compact .board-head {
+  padding: 14px 10px 6px;
+  margin-bottom: 4px;
+}
+
+.board-cal-compact .board-month {
+  font-size: 16px;
+}
+
+.board-cal-compact .board-grid,
+.board-cal-compact .board-day {
+  border-color: transparent;
+}
+
+.board-cal-compact .board-day {
+  min-height: 36px;
+  align-items: center;
+  padding: 2px 0;
+  background: transparent;
+}
+
+.board-dots {
+  display: flex;
+  gap: 2px;
+}
+
+.board-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.room-calendar {
+  position: relative;
+}
+
+.cal-detail-holiday {
+  color: var(--danger);
+}
+
+.event-swatch {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 50%;
+}
+
 /* -------------------------------------------------- week timeline view */
 
 .cal-view-toggle {
