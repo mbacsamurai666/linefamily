@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { DateTime } from 'luxon';
 import type { messagingApi } from '@line/bot-sdk';
+import { buildDigestQuickReply, buildUrgentQuickReply, type DigestNames } from '../line/digestActions.js';
 import { renderDigestImage } from '../line/digestImage.js';
 import { buildDigest } from '../line/flex/digest.js';
 import type {
@@ -133,8 +134,34 @@ export class LineNotifier implements Notifier {
       messages.push({ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl });
     }
 
+    // Quick replies show under the newest message only, so they ride on the
+    // last one — whichever that turned out to be.
+    const quickReply = buildDigestQuickReply(jobs, await this.namesFor(jobs), this.liffUrl);
+    if (quickReply) messages[messages.length - 1] = { ...messages[messages.length - 1]!, quickReply };
+
     await this.api.pushMessage({ to, messages });
     return messages.length;
+  }
+
+  /** What the bills, tasks and chores in this batch are called, for the buttons. */
+  private async namesFor(jobs: ReminderJob[]): Promise<DigestNames> {
+    const ids = (kind: ReminderJob['kind']) =>
+      [...new Set(jobs.filter((j) => j.kind === kind).map((j) => j.refId))];
+    const billIds = ids('BILL');
+    const taskIds = ids('TASK');
+    const choreIds = ids('CHORE');
+
+    const [bills, tasks, chores] = await Promise.all([
+      billIds.length ? this.prisma.bill.findMany({ where: { id: { in: billIds } }, select: { id: true, name: true } }) : [],
+      taskIds.length ? this.prisma.task.findMany({ where: { id: { in: taskIds } }, select: { id: true, title: true } }) : [],
+      choreIds.length ? this.prisma.chore.findMany({ where: { id: { in: choreIds } }, select: { id: true, name: true } }) : [],
+    ]);
+
+    return {
+      bills: new Map(bills.map((b) => [b.id, b.name])),
+      tasks: new Map(tasks.map((t) => [t.id, t.title])),
+      chores: new Map(chores.map((c) => [c.id, c.name])),
+    };
   }
 
   private async storeDigestImage(
@@ -162,9 +189,10 @@ export class LineNotifier implements Notifier {
   async sendUrgent(familyId: string, job: ReminderJob): Promise<void> {
     const to = await this.groupIdOf(familyId);
     if (!to) return;
+    const quickReply = buildUrgentQuickReply(job);
     await this.api.pushMessage({
       to,
-      messages: [{ type: 'text', text: `⚠️ ${job.payload.text}` }],
+      messages: [{ type: 'text', text: `⚠️ ${job.payload.text}`, ...(quickReply ? { quickReply } : {}) }],
     });
   }
 }

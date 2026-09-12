@@ -266,13 +266,16 @@ describe('shopping', () => {
 describe('GET /dashboard', () => {
   it('combines upcoming items, this month\'s money overview, and net worth', async () => {
     const now = DateTime.now().setZone(ZONE);
+    // "Later today" whatever the clock says: two hours after 22:30 is
+    // tomorrow, which is how this test first failed — at 22:55 Bangkok time.
+    const laterToday = now.hour < 22 ? now.plus({ hours: 2 }) : now.plus({ minutes: 1 });
 
     await db.prisma.notificationJob.create({
       data: {
         familyId,
         kind: 'EVENT',
         refId: 'e1',
-        dueAt: now.plus({ hours: 2 }).toJSDate(),
+        dueAt: laterToday.toJSDate(),
         payload: { text: 'นัดวันนี้' },
       },
     });

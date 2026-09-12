@@ -35,13 +35,14 @@ beforeEach(async () => {
 
 /** Minimal stand-in for the LINE client: records what would have been sent. */
 function fakeApi() {
-  const pushed: Array<{ to: string; altText: string }> = [];
+  const pushed: Array<{ to: string; altText: string; messages: messagingApi.Message[] }> = [];
   const api = {
     pushMessage: async (req: messagingApi.PushMessageRequest) => {
       const first = req.messages[0];
       pushed.push({
         to: req.to,
         altText: first && 'altText' in first ? String(first.altText) : (first?.type ?? ''),
+        messages: req.messages,
       });
       return {};
     },
@@ -164,6 +165,24 @@ describe('full loop: appointment -> jobs -> digest push', () => {
       where: { familyId_yearMonth: { familyId, yearMonth: '2026-09' } },
     });
     expect(budget.used).toBe(1);
+  });
+
+  it('puts a "จ่ายแล้ว" button under a digest that carries a bill', async () => {
+    const created = DateTime.fromISO('2026-09-04T10:00', { zone: ZONE });
+    await persistDraft(
+      { kind: 'bill', name: 'ค่าไฟ', amount: 80000, dueDay: 8 },
+      { prisma: db.prisma, familyId, memberId: null, now: created },
+    );
+
+    const { api, pushed } = fakeApi();
+    // The 3-day reminder before the 8th: due on the 5th, in the morning digest.
+    const digestTime = created.plus({ days: 1 }).set({ hour: 7, minute: 0, second: 0, millisecond: 0 });
+    await buildEngine(() => digestTime, api).tick();
+
+    expect(pushed).toHaveLength(1);
+    const last = pushed[0]?.messages.at(-1) as { quickReply?: messagingApi.QuickReply };
+    const taps = last.quickReply?.items?.map((i) => (i.action as messagingApi.MessageAction | undefined)?.text);
+    expect(taps).toEqual(['จ่ายบิลแล้ว ค่าไฟ']);
   });
 
   it('a second tick in the same minute sends nothing more', async () => {
