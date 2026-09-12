@@ -91,7 +91,7 @@ export default function App() {
     api.me().then(setMe).catch((e: Error) => setError(e.message));
   }, []);
 
-  if (error) return <div className="screen center error">{error}</div>;
+  if (error) return <div className="screen center error">{welcomeOrError(error)}</div>;
   if (!me) return <div className="screen center loading">กำลังโหลด...</div>;
 
   const initial = me.displayName.trim().charAt(0) || '🏡';
@@ -172,6 +172,20 @@ export default function App() {
       </nav>
     </div>
   );
+}
+
+/**
+ * Someone the bot has never seen speak is not an error, it is a first visit.
+ *
+ * The bot learns who people are from the group — when they join, or the first
+ * time they say anything. Whoever was already in the group before the bot
+ * arrived and has stayed quiet since gets here, and "401 unauthorized" tells
+ * them nothing about the one thing that fixes it.
+ */
+function welcomeOrError(message: string): string {
+  return /^401\b|unauthorized/i.test(message)
+    ? 'ยังไม่รู้จักคุณในกลุ่มนี้ครับ — ทักอะไรสักคำในกลุ่มที่มีบอทอยู่ แล้วเปิดแอปอีกครั้ง'
+    : message;
 }
 
 /**
