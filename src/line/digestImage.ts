@@ -84,7 +84,9 @@ export async function renderDigestImage({
     ? jobs.length > 0
       ? 'อรุณสวัสดิ์ครับ วันนี้มีแบบนี้'
       : 'อรุณสวัสดิ์ครับ วันนี้สบาย ๆ'
-    : 'ก่อนนอน เช็กอีกรอบนะครับ';
+    : jobs.length > 0
+      ? 'ก่อนนอน เช็กอีกรอบนะครับ'
+      : 'คืนนี้สบาย ๆ ฝันดีครับ';
   const mood = morning ? 'wave' : 'sleepy';
 
   // Measuring needs a context, and the canvas needs the height measuring
@@ -102,7 +104,7 @@ export async function renderDigestImage({
 
   drawBackdrop(ctx, height);
   drawSign(ctx, heading, `${formatThaiDate(slot)} · ${slot.toFormat('HH:mm')} น.`);
-  const summary = jobs.length > 0 ? `ทั้งหมด ${jobs.length} รายการ` : 'วันนี้ไม่มีอะไรต้องเตือน';
+  const summary = jobs.length > 0 ? `ทั้งหมด ${jobs.length} รายการ` : `${morning ? 'วันนี้' : 'คืนนี้'}ไม่มีอะไรต้องเตือน`;
   drawBoard(ctx, lines, boardTop, boardHeight, summary);
   await drawMascots(ctx, height - PAD, greeting, mood);
 

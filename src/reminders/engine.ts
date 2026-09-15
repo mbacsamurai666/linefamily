@@ -58,11 +58,28 @@ export function digestSlots(day: DateTime, slots: SlotMinutes[]): DateTime[] {
     .map((m) => start.set({ hour: Math.floor(m / 60), minute: m % 60 }));
 }
 
-/** The next slot strictly after `now`, crossing midnight when needed. */
-export function nextDigestSlot(now: DateTime, slots: SlotMinutes[]): DateTime {
-  for (const slot of digestSlots(now, slots)) {
-    if (slot > now) return slot;
+/** ISO weekdays, Monday 1 to Sunday 7. */
+export const EVERY_DAY = [1, 2, 3, 4, 5, 6, 7];
+
+/**
+ * The next slot strictly after `now`, crossing midnight — and any days the
+ * family switched off — when needed.
+ *
+ * Skipping a day here, rather than skipping its digest later, is what keeps a
+ * weekend off from losing anything: Friday evening's digest looks ahead to
+ * Monday morning, so whatever falls due on Saturday goes out on Friday instead
+ * of waiting unannounced until Monday.
+ */
+export function nextDigestSlot(now: DateTime, slots: SlotMinutes[], days = EVERY_DAY): DateTime {
+  for (let i = 0; i <= 7; i++) {
+    const day = now.plus({ days: i });
+    if (!days.includes(day.weekday)) continue;
+    for (const slot of digestSlots(day, slots)) {
+      if (slot > now) return slot;
+    }
   }
+  // Every day switched off: the settings API refuses this, so any answer is
+  // only a guard — tomorrow's first slot.
   return digestSlots(now.plus({ days: 1 }), slots)[0] as DateTime;
 }
 
@@ -77,10 +94,14 @@ export function nextDigestSlot(now: DateTime, slots: SlotMinutes[]): DateTime {
  * two reminders sat PENDING for five days without anything being broken enough
  * to notice.
  */
-export function currentDigestSlot(now: DateTime, slots: SlotMinutes[]): DateTime {
-  const passed = digestSlots(now, slots).filter((slot) => slot <= now);
-  const last = passed[passed.length - 1];
-  if (last) return last;
+export function currentDigestSlot(now: DateTime, slots: SlotMinutes[], days = EVERY_DAY): DateTime {
+  for (let i = 0; i <= 7; i++) {
+    const day = now.minus({ days: i });
+    if (!days.includes(day.weekday)) continue;
+    const passed = digestSlots(day, slots).filter((slot) => slot <= now);
+    const last = passed[passed.length - 1];
+    if (last) return last;
+  }
   const yesterday = digestSlots(now.minus({ days: 1 }), slots);
   return yesterday[yesterday.length - 1] as DateTime;
 }
@@ -111,8 +132,9 @@ export class ReminderEngine {
       // refuses that, so this only guards against a hand-edited row.
       if (slots.length === 0) continue;
 
+      const days = family.days && family.days.length > 0 ? family.days : EVERY_DAY;
       const localNow = now.setZone(family.timezone);
-      const slot = currentDigestSlot(localNow, slots);
+      const slot = currentDigestSlot(localNow, slots, days);
       const key = slot.toISO() ?? '';
 
       const seen = this.handledSlot.get(family.familyId);
@@ -131,7 +153,7 @@ export class ReminderEngine {
        * and travel with company.
        */
       const onTime = seen !== undefined || localNow < slot.plus({ minutes: 2 });
-      const horizon = onTime ? nextDigestSlot(localNow, slots) : slot;
+      const horizon = onTime ? nextDigestSlot(localNow, slots, days) : slot;
 
       const outcome = await this.runDigestFor(family.familyId, localNow, horizon);
 
@@ -139,7 +161,7 @@ export class ReminderEngine {
       // time every day. Only on time: a quiet "good morning" sent at 13:00
       // after a restart is noise, not a digest.
       const slotMinutes = slot.hour * 60 + slot.minute;
-      if (outcome === 'empty' && onTime && family.quietDaySlot === slotMinutes) {
+      if (outcome === 'empty' && onTime && (family.quietDaySlots ?? []).includes(slotMinutes)) {
         await this.runQuietDigest(family.familyId, localNow);
       }
       // Marked whether or not anything went out: an empty queue is a handled

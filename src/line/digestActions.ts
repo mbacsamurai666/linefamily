@@ -78,7 +78,7 @@ export function buildDigestQuickReply(
 
   const trimmed = items.slice(0, liffUrl ? MAX_ITEMS - 1 : MAX_ITEMS);
   if (liffUrl) {
-    trimmed.push({ type: 'action', action: { type: 'uri', label: '🏠 เปิดแอป', uri: liffUrl } });
+    trimmed.push({ type: 'action', action: { type: 'uri', label: '📅 ปฏิทิน', uri: liffUrl } });
   }
   return { items: trimmed };
 }

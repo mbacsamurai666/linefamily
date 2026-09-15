@@ -13,6 +13,7 @@ import {
   listLoans,
 } from '../modules/loanAssetDeposit.js';
 import { persistDraft, resolveRotation } from '../modules/persist.js';
+import { applyLeadTimes, familyLeadTimes, LEAD_KINDS } from '../modules/leadTimes.js';
 import { computeSetupStatus } from '../modules/setup.js';
 import {
   deleteAsset,
@@ -226,6 +227,20 @@ const digestSettingsBody = z
     morningOn: z.boolean().optional(),
     eveningOn: z.boolean().optional(),
     everyMorning: z.boolean().optional(),
+    everyEvening: z.boolean().optional(),
+    // ISO weekdays, Monday 1 … Sunday 7.
+    days: z.array(z.number().int().min(1).max(7)).max(7).optional(),
+  })
+  .strict();
+
+/** Up to 180 days ahead, at most six reminders per item. */
+const leadMinutes = z.array(z.number().int().min(0).max(180 * 24 * 60)).min(1).max(6);
+const leadTimesBody = z
+  .object({
+    event: leadMinutes.optional(),
+    bill: leadMinutes.optional(),
+    document: leadMinutes.optional(),
+    task: leadMinutes.optional(),
   })
   .strict();
 
@@ -395,6 +410,8 @@ export function createApiRouter(deps: ApiDeps) {
         digestMorningOn: true,
         digestEveningOn: true,
         digestEveryMorning: true,
+        digestEveryEvening: true,
+        digestDays: true,
       },
     });
     return c.json({
@@ -403,6 +420,8 @@ export function createApiRouter(deps: ApiDeps) {
       morningOn: f.digestMorningOn,
       eveningOn: f.digestEveningOn,
       everyMorning: f.digestEveryMorning,
+      everyEvening: f.digestEveryEvening,
+      days: [...f.digestDays].sort((a, b) => a - b),
     });
   });
 
@@ -434,6 +453,10 @@ export function createApiRouter(deps: ApiDeps) {
     if (next.eveningAt < 12 * 60) {
       return c.json({ error: 'สรุปเย็นต้องหลังเที่ยง' }, 400);
     }
+    // No days at all is both digests off by another name.
+    if (parsed.data.days !== undefined && parsed.data.days.length === 0) {
+      return c.json({ error: 'ต้องเลือกอย่างน้อย 1 วัน ไม่อย่างนั้นการเตือนจะไม่ถูกส่งเลย' }, 400);
+    }
 
     await deps.prisma.family.update({
       where: { id: member.familyId },
@@ -445,9 +468,34 @@ export function createApiRouter(deps: ApiDeps) {
         ...(parsed.data.everyMorning !== undefined
           ? { digestEveryMorning: parsed.data.everyMorning }
           : {}),
+        ...(parsed.data.everyEvening !== undefined
+          ? { digestEveryEvening: parsed.data.everyEvening }
+          : {}),
+        ...(parsed.data.days !== undefined
+          ? { digestDays: [...new Set(parsed.data.days)].sort((a, b) => a - b) }
+          : {}),
       },
     });
     return c.json({ ok: true });
+  });
+
+  /** How far ahead each kind of thing is reminded about, in minutes. */
+  app.get('/family/lead-times', async (c) => {
+    const member = c.get('member');
+    return c.json(await familyLeadTimes(deps.prisma, member.familyId));
+  });
+
+  app.patch('/family/lead-times', async (c) => {
+    const member = c.get('member');
+    const parsed = leadTimesBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'ต้องเลือกช่วงเตือนอย่างน้อย 1 ช่วง' }, 400);
+
+    const now = DateTime.now();
+    for (const kind of LEAD_KINDS) {
+      const minutes = parsed.data[kind];
+      if (minutes) await applyLeadTimes(deps.prisma, member.familyId, kind, minutes, now);
+    }
+    return c.json(await familyLeadTimes(deps.prisma, member.familyId));
   });
 
   /** What the family has not set up yet — the checklist on the dashboard. */

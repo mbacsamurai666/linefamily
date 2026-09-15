@@ -16,7 +16,7 @@ interface Cell extends RichMenuCell {
 
 function buildCells(liffUrl: string | undefined): Cell[] {
   const openApp: messagingApi.Action = liffUrl
-    ? { type: 'uri', label: 'เปิดแอป', uri: liffUrl }
+    ? { type: 'uri', label: 'ปฏิทิน', uri: liffUrl }
     : { type: 'message', label: 'ช่วย', text: 'ช่วย' };
 
   // Six slots for more than six features, so the menu carries what is either
@@ -40,8 +40,8 @@ function buildCells(liffUrl: string | undefined): Cell[] {
     },
     { label: 'ทำแล้ว', sublabel: 'เวรวันนี้', action: { type: 'message', label: 'ทำแล้ว', text: 'ทำแล้ว' } },
     {
-      label: liffUrl ? 'เปิดแอป' : 'ช่วย',
-      ...(liffUrl ? { sublabel: 'ปฏิทิน/งาน/เงิน' } : {}),
+      label: liffUrl ? 'ปฏิทิน' : 'ช่วย',
+      ...(liffUrl ? { sublabel: 'เปิดแอปบ้านเรา' } : {}),
       action: openApp,
     },
     {

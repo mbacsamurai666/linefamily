@@ -97,6 +97,8 @@ export function familyClock(r: {
   digestMorningOn: boolean;
   digestEveningOn: boolean;
   digestEveryMorning: boolean;
+  digestEveryEvening: boolean;
+  digestDays: number[];
 }): FamilyClockInfo {
   const slots = [
     ...(r.digestMorningOn ? [r.digestMorningAt] : []),
@@ -106,7 +108,11 @@ export function familyClock(r: {
     familyId: r.id,
     timezone: r.timezone,
     slots,
-    quietDaySlot: r.digestMorningOn && r.digestEveryMorning ? r.digestMorningAt : null,
+    quietDaySlots: [
+      ...(r.digestMorningOn && r.digestEveryMorning ? [r.digestMorningAt] : []),
+      ...(r.digestEveningOn && r.digestEveryEvening ? [r.digestEveningAt] : []),
+    ],
+    days: r.digestDays,
   };
 }
 
@@ -123,6 +129,8 @@ export class PrismaFamilyStore implements FamilyStore {
         digestMorningOn: true,
         digestEveningOn: true,
         digestEveryMorning: true,
+        digestEveryEvening: true,
+        digestDays: true,
       },
     });
     return rows.map((r) => familyClock(r));

@@ -73,10 +73,13 @@ function section(kind: JobKind, jobs: ReminderJob[]): messagingApi.FlexBox {
  * A day with nothing due still gets its morning message — the family asked
  * for one every day — so it carries the week ahead instead of an empty card.
  */
-function quietDay(upcoming: Array<{ when: string; title: string }>): messagingApi.FlexComponent[] {
+function quietDay(
+  upcoming: Array<{ when: string; title: string }>,
+  morning: boolean,
+): messagingApi.FlexComponent[] {
   const intro: messagingApi.FlexText = {
     type: 'text',
-    text: 'วันนี้ไม่มีอะไรต้องเตือนครับ ☀️',
+    text: morning ? 'วันนี้ไม่มีอะไรต้องเตือนครับ ☀️' : 'คืนนี้ไม่มีอะไรต้องเตือนครับ 🌙',
     size: 'sm',
     color: COLORS.text,
     margin: 'md',
@@ -137,7 +140,7 @@ export function buildDigest(
   }
 
   const sections = quiet
-    ? quietDay(upcoming)
+    ? quietDay(upcoming, morning)
     : SECTION_ORDER.filter((k) => grouped.has(k)).map((k) =>
         section(k, grouped.get(k) as ReminderJob[]),
       );
@@ -145,7 +148,7 @@ export function buildDigest(
   return {
     type: 'flex',
     altText: quiet
-      ? `${heading} — วันนี้ไม่มีอะไรต้องเตือน`
+      ? `${heading} — ${morning ? 'วันนี้' : 'คืนนี้'}ไม่มีอะไรต้องเตือน`
       : `${heading} — มี ${jobs.length} รายการ`,
     contents: {
       type: 'bubble',

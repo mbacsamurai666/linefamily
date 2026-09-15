@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
-import { ReminderEngine, nextDigestSlot } from '../src/reminders/engine.js';
+import { ReminderEngine, currentDigestSlot, nextDigestSlot } from '../src/reminders/engine.js';
 import type {
   BudgetStore,
   Clock,
@@ -125,6 +125,51 @@ describe('nextDigestSlot', () => {
     const dt = DateTime.fromISO(now, { zone: ZONE });
     expect(nextDigestSlot(dt, [MORNING * 60, EVENING * 60]).toFormat("yyyy-MM-dd'T'HH:mm")).toBe(expected);
     expect(base.isValid).toBe(true);
+  });
+});
+
+describe('digest days the family chose', () => {
+  const WEEKDAYS = [1, 2, 3, 4, 5];
+  const at = (iso: string) => DateTime.fromISO(iso, { zone: ZONE });
+  const fmt = "yyyy-MM-dd'T'HH:mm";
+
+  it('skips the weekend when looking for the next digest', () => {
+    // Friday 18 Sep 2026, after the evening digest.
+    expect(nextDigestSlot(at('2026-09-18T21:00'), [420, 1200], WEEKDAYS).toFormat(fmt)).toBe('2026-09-21T07:00');
+  });
+
+  it('looks back past the weekend for the slot last due', () => {
+    expect(currentDigestSlot(at('2026-09-20T12:00'), [420, 1200], WEEKDAYS).toFormat(fmt)).toBe('2026-09-18T20:00');
+  });
+
+  async function run(stores: MemoryStores, from: string, to: string) {
+    let cursor = at(from);
+    const engine = buildEngine(stores, { now: () => cursor }, 60);
+    while (cursor <= at(to)) {
+      await engine.tick();
+      cursor = cursor.plus({ minutes: 1 });
+    }
+  }
+
+  it("tells Friday evening about Saturday's appointment", async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], days: WEEKDAYS };
+    stores.rows.push(job('saturday-dentist', at('2026-09-19T10:00')));
+
+    await run(stores, '2026-09-18T19:00', '2026-09-18T20:05');
+
+    expect(stores.pushes).toHaveLength(1);
+    expect(stores.pushes[0]?.at).toContain('2026-09-18T20:00');
+    expect(stores.pushes[0]?.jobIds).toEqual(['saturday-dentist']);
+  });
+
+  it('stays silent on a day the family left out, even for a daily morning', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [420], days: WEEKDAYS };
+
+    await run(stores, '2026-09-19T00:00', '2026-09-19T23:59');
+
+    expect(stores.pushes).toEqual([]);
   });
 });
 
@@ -304,7 +349,7 @@ describe('digest times the family chose', () => {
 
   it('says good morning every day, even with nothing due', async () => {
     const stores = new MemoryStores(500);
-    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [420] };
 
     await runDay(stores);
 
@@ -315,16 +360,28 @@ describe('digest times the family chose', () => {
 
   it('keeps the evening quiet on a quiet day unless asked', async () => {
     const stores = new MemoryStores(500);
-    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: null };
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [] };
 
     await runDay(stores);
 
     expect(stores.pushes).toEqual([]);
   });
 
+  it('says good night too, when the family asked for every evening', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [420, 1200] };
+
+    await runDay(stores);
+
+    expect(stores.pushes.map((p) => p.at)).toEqual([
+      expect.stringContaining('T07:00'),
+      expect.stringContaining('T20:00'),
+    ]);
+  });
+
   it('does not say good morning at lunchtime after a restart', async () => {
     const stores = new MemoryStores(500);
-    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [420] };
 
     await runDay(stores, '13:00', '19:00');
 
@@ -334,7 +391,7 @@ describe('digest times the family chose', () => {
   it('never spends the urgent reserve on a day with nothing in it', async () => {
     const stores = new MemoryStores(500);
     stores.used.set(`${FAMILY}:2026-09`, 450); // 50 left, under the 60 reserve
-    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlots: [420] };
 
     await runDay(stores);
 

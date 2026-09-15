@@ -66,10 +66,12 @@ export interface FamilyClockInfo {
    */
   slots?: number[];
   /**
-   * The one slot that sends even when nothing is due — the family's "every
-   * morning". Null or omitted: quiet days stay quiet.
+   * Slots that send even when nothing is due — the family's "every morning"
+   * and, if asked for, "every evening". Empty or omitted: quiet days stay quiet.
    */
-  quietDaySlot?: number | null;
+  quietDaySlots?: number[];
+  /** ISO weekdays the digests go out on (Monday 1 … Sunday 7). Omit for every day. */
+  days?: number[];
 }
 
 export interface FamilyStore {

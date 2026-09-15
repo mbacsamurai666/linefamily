@@ -179,6 +179,17 @@ export interface DigestSettings {
   eveningOn: boolean;
   /** Send the morning digest even when nothing is due. */
   everyMorning: boolean;
+  everyEvening: boolean;
+  /** ISO weekdays the digests go out on, Monday 1 … Sunday 7. */
+  days: number[];
+}
+
+/** Minutes ahead of the due time, per kind of thing. */
+export interface LeadTimes {
+  event: number[];
+  bill: number[];
+  document: number[];
+  task: number[];
 }
 
 export interface Emergency {
@@ -293,6 +304,9 @@ export const api = {
   dashboard: () => request<DashboardData>('/dashboard'),
   setup: () => request<{ items: SetupItem[]; doneCount: number }>('/setup'),
   digestSettings: () => request<DigestSettings>('/family/digest'),
+  leadTimes: () => request<LeadTimes>('/family/lead-times'),
+  saveLeadTimes: (body: Partial<LeadTimes>) =>
+    request<LeadTimes>('/family/lead-times', { method: 'PATCH', body: JSON.stringify(body) }),
   saveDigestSettings: (body: Partial<DigestSettings>) =>
     request('/family/digest', { method: 'PATCH', body: JSON.stringify(body) }),
   emergency: () => request<Emergency>('/me/emergency'),

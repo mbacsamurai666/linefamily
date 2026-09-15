@@ -17,6 +17,7 @@ import {
   type MedicationItem,
   type Me,
   type DigestSettings,
+  type LeadTimes,
   type Emergency,
   type SetupItem,
   type SetupKey,
@@ -82,7 +83,10 @@ const WEEK_HOURS = Array.from(
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('dashboard');
+  // Every way into the app — the card in the group, the digest's button, the
+  // rich menu — lands on the family's calendar: it is what people open the app
+  // to look at. The dashboard is one tap away in the bar.
+  const [tab, setTab] = useState<Tab>('agenda');
   // A day tapped on the dashboard's board, for the calendar tab to open on.
   const [calendarDay, setCalendarDay] = useState<string | null>(null);
   // A setup-checklist line tapped, for the manage tab to open on.
@@ -147,9 +151,9 @@ export default function App() {
       <nav className="tabbar">
         {(
           [
+            ['agenda', '📅', 'ปฏิทิน'],
             ['dashboard', '🏠', 'หน้าหลัก'],
             ['tasks', '📋', 'งาน'],
-            ['agenda', '📅', 'ปฏิทิน'],
             ['money', '💰', 'เงิน'],
             ['shopping', '🛒', 'ซื้อของ'],
             ['manage', '⚙️', 'จัดการ'],
@@ -2529,6 +2533,7 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
   return (
     <div>
       <DigestSettingsSection />
+      <LeadTimesSection />
       <BillsSection openAdd={focus === 'bills'} />
       <DocumentsSection openAdd={focus === 'documents'} />
       <MedicationsSection openAdd={focus === 'medications'} />
@@ -2550,6 +2555,17 @@ function halfHours(fromHour: number, toHour: number): string[] {
 
 const MORNING_TIMES = halfHours(4, 11);
 const EVENING_TIMES = halfHours(15, 23);
+
+/** ISO weekday order, starting Monday the way a Thai wall calendar does. */
+const WEEKDAYS: Array<[number, string]> = [
+  [1, 'จ'],
+  [2, 'อ'],
+  [3, 'พ'],
+  [4, 'พฤ'],
+  [5, 'ศ'],
+  [6, 'ส'],
+  [7, 'อา'],
+];
 
 /**
  * When the bot talks to the group. The first week went three days without a
@@ -2656,13 +2672,178 @@ function DigestSettingsSection() {
             ))}
           </select>
         </div>
-        <div className="muted">สรุปเย็นส่งเฉพาะวันที่มีอะไรต้องเตือน</div>
+        <label className={`checkbox-field digest-sub${form.eveningOn ? '' : ' is-disabled'}`}>
+          <input
+            type="checkbox"
+            checked={form.everyEvening}
+            disabled={!form.eveningOn}
+            onChange={(e) => update({ everyEvening: e.target.checked })}
+          />
+          ส่งทุกเย็น แม้วันนั้นไม่มีอะไรครบกำหนด
+        </label>
 
-        <button type="submit" className="form-submit" disabled={saving || (!form.morningOn && !form.eveningOn)}>
+        <div className="digest-days-label">ส่งวันไหนบ้าง</div>
+        <div className="segmented digest-days" role="group" aria-label="วันที่ส่งสรุป">
+          {WEEKDAYS.map(([day, label]) => {
+            const on = form.days.includes(day);
+            return (
+              <button
+                key={day}
+                type="button"
+                className={on ? 'active' : ''}
+                aria-pressed={on}
+                onClick={() =>
+                  update({ days: on ? form.days.filter((d) => d !== day) : [...form.days, day].sort() })
+                }
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {form.days.length < 7 && form.days.length > 0 && (
+          <div className="muted">วันที่ไม่ส่ง เรื่องที่ครบกำหนดจะรวมไปบอกในรอบถัดไปก่อนถึงวันจริง</div>
+        )}
+
+        <button
+          type="submit"
+          className="form-submit"
+          disabled={saving || (!form.morningOn && !form.eveningOn) || form.days.length === 0}
+        >
           {saving ? 'กำลังบันทึก...' : 'บันทึกการแจ้งเตือน'}
         </button>
         {!form.morningOn && !form.eveningOn && (
           <p className="error">ต้องเปิดไว้อย่างน้อย 1 รอบ ไม่อย่างนั้นการเตือนจะไม่ถูกส่งเลย</p>
+        )}
+        {form.days.length === 0 && <p className="error">ต้องเลือกอย่างน้อย 1 วัน</p>}
+        {note && <p className={note.error ? 'error' : 'muted'}>{note.text}</p>}
+      </form>
+    </div>
+  );
+}
+
+const DAY = 24 * 60;
+
+/** The choices offered per kind — the defaults are always among them. */
+const LEAD_CHOICES: Array<{ kind: keyof LeadTimes; title: string; options: Array<[number, string]> }> = [
+  {
+    kind: 'event',
+    title: '📅 นัดหมาย',
+    options: [
+      [7 * DAY, '7 วัน'],
+      [3 * DAY, '3 วัน'],
+      [DAY, '1 วัน'],
+      [120, '2 ชม.'],
+    ],
+  },
+  {
+    kind: 'bill',
+    title: '💸 บิล',
+    options: [
+      [7 * DAY, '7 วัน'],
+      [3 * DAY, '3 วัน'],
+      [DAY, '1 วัน'],
+      [0, 'วันครบกำหนด'],
+    ],
+  },
+  {
+    kind: 'document',
+    title: '📄 เอกสารหมดอายุ',
+    options: [
+      [90 * DAY, '90 วัน'],
+      [60 * DAY, '60 วัน'],
+      [30 * DAY, '30 วัน'],
+      [7 * DAY, '7 วัน'],
+    ],
+  },
+  {
+    kind: 'task',
+    title: '✅ งาน',
+    options: [
+      [3 * DAY, '3 วัน'],
+      [DAY, '1 วัน'],
+      [0, 'วันครบกำหนด'],
+    ],
+  },
+];
+
+/**
+ * How far ahead each kind of thing is reminded. A change applies to what is
+ * already on record too, not only to what gets added next.
+ */
+function LeadTimesSection() {
+  const [form, setForm] = useState<LeadTimes | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ text: string; error?: boolean } | null>(null);
+
+  useEffect(() => {
+    api
+      .leadTimes()
+      .then(setForm)
+      .catch((e: Error) => setNote({ text: readableError(e), error: true }));
+  }, []);
+
+  if (!form) {
+    return (
+      <div className="dash-section" id="section-lead-times">
+        <div className="dash-section-heading">⏰ เตือนล่วงหน้า</div>
+        {note ? <p className="error">{note.text}</p> : <p className="loading">กำลังโหลด...</p>}
+      </div>
+    );
+  }
+
+  const toggle = (kind: keyof LeadTimes, minutes: number) => {
+    const current = form[kind];
+    const next = current.includes(minutes) ? current.filter((m) => m !== minutes) : [...current, minutes];
+    setForm({ ...form, [kind]: next.sort((a, b) => b - a) });
+    setNote(null);
+  };
+  const empty = LEAD_CHOICES.filter((c) => form[c.kind].length === 0);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      setForm(await api.saveLeadTimes(form));
+      setNote({ text: 'บันทึกแล้ว — ใช้กับรายการเดิมและรายการใหม่ทั้งหมด' });
+    } catch (err) {
+      setNote({ text: readableError(err), error: true });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="dash-section" id="section-lead-times">
+      <div className="dash-section-heading">⏰ เตือนล่วงหน้า</div>
+      <form className="entry-form" onSubmit={save}>
+        {LEAD_CHOICES.map(({ kind, title, options }) => (
+          <div key={kind} className="lead-kind">
+            <div className="digest-days-label">{title}</div>
+            <div className="segmented" role="group" aria-label={`เตือน${title}ล่วงหน้า`}>
+              {options.map(([minutes, label]) => {
+                const on = form[kind].includes(minutes);
+                return (
+                  <button
+                    key={minutes}
+                    type="button"
+                    className={on ? 'active' : ''}
+                    aria-pressed={on}
+                    onClick={() => toggle(kind, minutes)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="muted">เตือนจะไปอยู่ในสรุปรอบที่ใกล้ที่สุดก่อนถึงเวลานั้น</div>
+        <button type="submit" className="form-submit" disabled={saving || empty.length > 0}>
+          {saving ? 'กำลังบันทึก...' : 'บันทึกช่วงเตือน'}
+        </button>
+        {empty.length > 0 && (
+          <p className="error">เลือกอย่างน้อย 1 ช่วงให้ {empty.map((c) => c.title.replace(/^\S+ /, '')).join(', ')}</p>
         )}
         {note && <p className={note.error ? 'error' : 'muted'}>{note.text}</p>}
       </form>

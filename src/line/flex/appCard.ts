@@ -22,7 +22,7 @@ export function buildAppCard(opts: {
 }): messagingApi.FlexMessage {
   return {
     type: 'flex',
-    altText: `${opts.heading} — เปิดแอปบ้านเรา: ${opts.liffUrl}`,
+    altText: `${opts.heading} — เปิดปฏิทินบ้านเรา: ${opts.liffUrl}`,
     contents: {
       type: 'bubble',
       body: {
@@ -51,7 +51,7 @@ export function buildAppCard(opts: {
             type: 'button',
             style: 'primary',
             color: PINK,
-            action: { type: 'uri', label: '📱 เปิดแอปบ้านเรา', uri: opts.liffUrl },
+            action: { type: 'uri', label: '📅 เปิดปฏิทินบ้านเรา', uri: opts.liffUrl },
           },
           {
             type: 'text',

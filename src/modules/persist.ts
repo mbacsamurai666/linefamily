@@ -13,6 +13,7 @@ import {
   generateMonthSummaryJob,
   generateTaskJobs,
 } from '../reminders/generate.js';
+import { familyLeadTimes } from './leadTimes.js';
 
 /**
  * The only place a confirmed Draft becomes a database row.
@@ -75,6 +76,7 @@ async function persistEvent(
       category: draft.category,
       startAt: draft.startAt.toJSDate(),
       allDay: draft.allDay,
+      reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).event,
       ...(draft.location !== undefined ? { location: draft.location } : {}),
       ...(draft.note !== undefined ? { note: draft.note } : {}),
       ...(draft.rrule !== undefined ? { rrule: draft.rrule } : {}),
@@ -204,6 +206,7 @@ async function persistBill(
       familyId: ctx.familyId,
       name: draft.name,
       dueDay: draft.dueDay,
+      reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).bill,
       ...(draft.amount !== undefined ? { amount: draft.amount } : {}),
     },
   });
@@ -223,6 +226,7 @@ async function persistDocument(
       name: draft.name,
       type: draft.type,
       expiresAt: draft.expiresAt.toJSDate(),
+      reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).document,
       ...(ctx.memberId !== null ? { ownerId: ctx.memberId } : {}),
     },
   });
@@ -395,6 +399,7 @@ async function persistTask(
       familyId: ctx.familyId,
       title: draft.title,
       sortOrder: (lowest?.sortOrder ?? 0) - 1,
+      reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).task,
       ...(draft.dueAt !== undefined ? { dueAt: draft.dueAt.toJSDate() } : {}),
       ...(assigneeId !== undefined ? { assigneeId } : {}),
       ...(draft.note !== undefined ? { note: draft.note } : {}),

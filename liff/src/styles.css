@@ -554,6 +554,21 @@ select {
   padding-left: 26px;
 }
 
+.digest-days-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.digest-days button,
+.lead-kind .segmented button {
+  padding: 8px 2px;
+}
+
+.lead-kind .segmented {
+  flex-wrap: wrap;
+}
+
 .digest-sub.is-disabled {
   opacity: 0.5;
 }
