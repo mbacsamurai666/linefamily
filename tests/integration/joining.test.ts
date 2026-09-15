@@ -139,3 +139,60 @@ describe('a family group getting started', () => {
     expect(await db.prisma.member.count({ where: { lineUserId: 'U_dad' } })).toBe(1);
   });
 });
+
+describe('finding the app', () => {
+  const LIFF = 'https://liff.line.me/1234-abcd';
+  const withApp = (api: messagingApi.MessagingApiClient) => ({ ...deps(api), liffUrl: LIFF });
+
+  function buttonUri(message: unknown): string | undefined {
+    const card = message as messagingApi.FlexMessage;
+    const footer = (card.contents as messagingApi.FlexBubble).footer;
+    const button = footer?.contents.find((c) => c.type === 'button') as messagingApi.FlexButton | undefined;
+    return (button?.action as messagingApi.URIAction | undefined)?.uri;
+  }
+
+  it('greets someone new by name, with the app one tap away', async () => {
+    const { api, replyMessage } = fakeApi({ U_aunt: 'ป้าแดง' });
+    await handleEvent(joinEvent(), withApp(api));
+    replyMessage.mockClear();
+
+    await handleEvent(memberJoinedEvent(['U_aunt']), withApp(api));
+
+    const card = replyMessage.mock.calls[0]?.[0].messages[0];
+    expect(card.altText).toContain('ยินดีต้อนรับ ป้าแดง');
+    expect(buttonUri(card)).toBe(LIFF);
+  });
+
+  it('hands over the app when someone asks for it in their own words', async () => {
+    const { api, replyMessage } = fakeApi({ U_dad: 'พ่อ' });
+    await handleEvent(joinEvent(), withApp(api));
+
+    for (const ask of ['แอป', 'ขอลิงก์แอปหน่อย', 'เปิดแอป', 'ลิ้งแอปครับ', 'link app']) {
+      replyMessage.mockClear();
+      await handleEvent(textEvent('U_dad', ask), withApp(api));
+      expect(buttonUri(replyMessage.mock.calls[0]?.[0].messages[0]), ask).toBe(LIFF);
+    }
+  });
+
+  it('puts the app under the help text too', async () => {
+    const { api, replyMessage } = fakeApi({ U_dad: 'พ่อ' });
+    await handleEvent(joinEvent(), withApp(api));
+    replyMessage.mockClear();
+
+    await handleEvent(textEvent('U_dad', 'ช่วย'), withApp(api));
+
+    const messages = replyMessage.mock.calls[0]?.[0].messages;
+    expect(messages).toHaveLength(2);
+    expect(buttonUri(messages[1])).toBe(LIFF);
+  });
+
+  it('does not answer ordinary chat that merely mentions an app', async () => {
+    const { api, replyMessage } = fakeApi({ U_dad: 'พ่อ' });
+    await handleEvent(joinEvent(), withApp(api));
+    replyMessage.mockClear();
+
+    await handleEvent(textEvent('U_dad', 'แอปธนาคารล่มอีกแล้ว'), withApp(api));
+
+    expect(replyMessage).not.toHaveBeenCalled();
+  });
+});

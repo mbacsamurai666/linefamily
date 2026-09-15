@@ -6,6 +6,7 @@ import type { FamilyContext, IntentParser, ParseResult } from '../intent/types.j
 import type { VisionParser } from '../intent/VisionParser.js';
 import { classifyCommand, tryDirectCommand } from '../modules/commands.js';
 import { persistDraft } from '../modules/persist.js';
+import { ASK_FOR_APP, buildAppCard } from './flex/appCard.js';
 import { buildClarifyCard } from './flex/clarify.js';
 import { buildConfirmCard } from './flex/confirm.js';
 import type { DraftStore } from './drafts.js';
@@ -34,6 +35,8 @@ export interface WebhookDeps {
   photoTargets?: PhotoTargetStore;
   /** ChatGPT's translation of plain speech into commands. Omit to run with rules only. */
   rewriter?: CommandRewriter;
+  /** The LIFF app's link, handed to people who join or ask. Omit when there is no app. */
+  liffUrl?: string;
 }
 
 /** A rule-parsed draft at or above this goes straight to its confirm card. */
@@ -81,6 +84,7 @@ const HELP_TEXT = [
   '• "สรุปเงินกู้" / "สรุปทรัพย์สิน" / "สรุปเงินฝาก" — ดูรายการที่บันทึกไว้',
   '• "สรุปฐานะการเงิน" — ภาพรวมเงินให้ยืม + ทรัพย์สิน + เงินฝาก',
   '• "นัดพรุ่งนี้" / "นัดสัปดาห์นี้" — ดูว่ามีนัดอะไรบ้าง',
+  '• "แอป" — ขอลิงก์เปิดแอปบ้านเรา',
   '• "ลิสต์ซื้อของ" — ดูของที่ยังต้องซื้อ',
   '• "ข้ามนัด กายภาพ 21 ก.ย." — งดนัดที่เกิดซ้ำเฉพาะวันนั้น',
   '',
@@ -93,6 +97,15 @@ const HELP_TEXT = [
   '• "ลบเอกสาร / ลบเงินกู้ / ลบทรัพย์สิน / ลบเงินฝาก / ลบของ <ชื่อ>"',
   '• แก้ไขรายละเอียด ทำในแอป (แตะรายการแล้วกด "แก้ไข")',
 ].join('\n');
+
+/** The app card as it appears under help and on request. */
+function appCardFor(liffUrl: string): messagingApi.FlexMessage {
+  return buildAppCard({
+    liffUrl,
+    heading: 'แอปบ้านเรา',
+    lines: ['ปฏิทินนัดหมาย บอร์ดงาน รายรับ-รายจ่าย ลิสต์ซื้อของ บิล ยา เวรบ้าน — ทุกอย่างของบ้านในที่เดียว'],
+  });
+}
 
 export async function handleEvent(event: WebhookEvent, deps: WebhookDeps): Promise<void> {
   switch (event.type) {
@@ -173,7 +186,10 @@ async function handleJoin(
 
   await deps.api.replyMessage({
     replyToken: event.replyToken,
-    messages: [{ type: 'text', text: `สวัสดีครับ ผมพร้อมช่วยจัดการเรื่องบ้านแล้ว\n\n${HELP_TEXT}` }],
+    messages: [
+      { type: 'text', text: `สวัสดีครับ ผมพร้อมช่วยจัดการเรื่องบ้านแล้ว\n\n${HELP_TEXT}` },
+      ...(deps.liffUrl ? [appCardFor(deps.liffUrl)] : []),
+    ],
   });
 }
 
@@ -185,10 +201,31 @@ async function handleMemberJoined(
   if (!groupId) return;
   const family = await resolveFamily(deps, groupId);
 
+  const names: string[] = [];
   for (const member of event.joined.members) {
     if (member.type === 'user') {
-      await resolveMember(deps, family.id, groupId, member.userId);
+      const row = await resolveMember(deps, family.id, groupId, member.userId);
+      if (row && row.displayName !== 'สมาชิก') names.push(row.displayName);
     }
+  }
+
+  // Someone new has no idea the bot has an app, let alone where its link went.
+  // Tell them the moment they arrive — a reply, so it costs nothing.
+  if (deps.liffUrl && event.replyToken) {
+    await deps.api.replyMessage({
+      replyToken: event.replyToken,
+      messages: [
+        buildAppCard({
+          liffUrl: deps.liffUrl,
+          heading: names.length > 0 ? `ยินดีต้อนรับ ${names.join(', ')} 👋` : 'ยินดีต้อนรับครับ 👋',
+          lines: [
+            'กลุ่มนี้มีบอทช่วยจำนัดหมาย บิล ยา เวรบ้าน และรายรับ-รายจ่ายของบ้าน',
+            'เปิดแอปเพื่อดูปฏิทินและทุกอย่างของบ้าน หรือพิมพ์คุยกับบอทในกลุ่มได้เลย เช่น "พรุ่งนี้มีนัดอะไรบ้าง"',
+            'พิมพ์ "ช่วย" เพื่อดูว่าสั่งอะไรได้บ้าง',
+          ],
+        }),
+      ],
+    });
   }
 }
 
@@ -209,7 +246,18 @@ async function handleMessage(
   if (/^(help|ช่วย|วิธีใช้|คำสั่ง)$/i.test(text)) {
     await deps.api.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: HELP_TEXT }],
+      messages: [
+        { type: 'text', text: HELP_TEXT },
+        ...(deps.liffUrl ? [appCardFor(deps.liffUrl)] : []),
+      ],
+    });
+    return;
+  }
+
+  if (deps.liffUrl && ASK_FOR_APP.test(text)) {
+    await deps.api.replyMessage({
+      replyToken: event.replyToken,
+      messages: [appCardFor(deps.liffUrl)],
     });
     return;
   }

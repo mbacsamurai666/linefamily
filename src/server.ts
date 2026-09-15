@@ -108,6 +108,7 @@ async function main(): Promise<void> {
     ...(visionParser ? { visionParser } : {}),
     parser,
     ...(rewriter ? { rewriter } : {}),
+    ...(liffUrl ? { liffUrl } : {}),
     drafts,
     photoTargets,
     defaultTimezone: cfg.TZ,
