@@ -536,6 +536,28 @@ select {
   width: 64px;
 }
 
+/* -------------------------------------------------- daily digest settings */
+
+.digest-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.digest-row select {
+  width: auto;
+  min-width: 110px;
+}
+
+.digest-sub {
+  padding-left: 26px;
+}
+
+.digest-sub.is-disabled {
+  opacity: 0.5;
+}
+
 /* -------------------------------------------------- setup checklist */
 
 .setup-card {

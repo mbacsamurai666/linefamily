@@ -171,6 +171,16 @@ export interface SetupItem {
   count: number;
 }
 
+export interface DigestSettings {
+  /** "07:00" */
+  morningAt: string;
+  eveningAt: string;
+  morningOn: boolean;
+  eveningOn: boolean;
+  /** Send the morning digest even when nothing is due. */
+  everyMorning: boolean;
+}
+
 export interface Emergency {
   bloodType: string | null;
   allergies: string | null;
@@ -282,6 +292,9 @@ export const api = {
   }) => request('/events', { method: 'POST', body: JSON.stringify(body) }),
   dashboard: () => request<DashboardData>('/dashboard'),
   setup: () => request<{ items: SetupItem[]; doneCount: number }>('/setup'),
+  digestSettings: () => request<DigestSettings>('/family/digest'),
+  saveDigestSettings: (body: Partial<DigestSettings>) =>
+    request('/family/digest', { method: 'PATCH', body: JSON.stringify(body) }),
   emergency: () => request<Emergency>('/me/emergency'),
   saveEmergency: (body: Partial<Emergency>) =>
     request('/me/emergency', { method: 'PATCH', body: JSON.stringify(body) }),

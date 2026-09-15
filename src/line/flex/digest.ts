@@ -69,13 +69,65 @@ function section(kind: JobKind, jobs: ReminderJob[]): messagingApi.FlexBox {
   };
 }
 
+/**
+ * A day with nothing due still gets its morning message — the family asked
+ * for one every day — so it carries the week ahead instead of an empty card.
+ */
+function quietDay(upcoming: Array<{ when: string; title: string }>): messagingApi.FlexComponent[] {
+  const intro: messagingApi.FlexText = {
+    type: 'text',
+    text: 'วันนี้ไม่มีอะไรต้องเตือนครับ ☀️',
+    size: 'sm',
+    color: COLORS.text,
+    margin: 'md',
+    wrap: true,
+  };
+  if (upcoming.length === 0) {
+    return [
+      intro,
+      { type: 'text', text: 'สัปดาห์นี้ยังว่างทั้งสัปดาห์', size: 'xs', color: COLORS.muted, margin: 'sm' },
+    ];
+  }
+
+  return [
+    intro,
+    {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'xs',
+      margin: 'md',
+      contents: [
+        {
+          type: 'text',
+          text: `7 วันข้างหน้า (${upcoming.length})`,
+          size: 'xs',
+          weight: 'bold',
+          color: COLORS.muted,
+        },
+        ...upcoming.slice(0, 7).map(
+          (u): messagingApi.FlexText => ({
+            type: 'text',
+            text: `• ${u.when}  ${u.title}`,
+            size: 'sm',
+            color: COLORS.text,
+            wrap: true,
+          }),
+        ),
+      ],
+    },
+  ];
+}
+
 export function buildDigest(
   jobs: ReminderJob[],
   slot: DateTime,
   liffUrl?: string,
+  /** The week ahead, for a day with nothing due: "พ. 16 ก.ย. 15:00" + title. */
+  upcoming: Array<{ when: string; title: string }> = [],
 ): messagingApi.FlexMessage {
   const morning = slot.hour < 12;
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
+  const quiet = jobs.length === 0;
 
   const grouped = new Map<JobKind, ReminderJob[]>();
   for (const job of jobs) {
@@ -84,13 +136,17 @@ export function buildDigest(
     else grouped.set(job.kind, [job]);
   }
 
-  const sections = SECTION_ORDER.filter((k) => grouped.has(k)).map((k) =>
-    section(k, grouped.get(k) as ReminderJob[]),
-  );
+  const sections = quiet
+    ? quietDay(upcoming)
+    : SECTION_ORDER.filter((k) => grouped.has(k)).map((k) =>
+        section(k, grouped.get(k) as ReminderJob[]),
+      );
 
   return {
     type: 'flex',
-    altText: `${heading} — มี ${jobs.length} รายการ`,
+    altText: quiet
+      ? `${heading} — วันนี้ไม่มีอะไรต้องเตือน`
+      : `${heading} — มี ${jobs.length} รายการ`,
     contents: {
       type: 'bubble',
       body: {

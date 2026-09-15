@@ -213,6 +213,22 @@ const depositBody = z.object({
 
 const depositAdjustBody = z.object({ amountBaht: z.number() });
 
+/** "07:00" — digest times are chosen on the half hour in the app. */
+const clockTime = z.string().regex(/^([01]\d|2[0-3]):(00|15|30|45)$/);
+const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+const toClock = (minutes: number) =>
+  `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
+const digestSettingsBody = z
+  .object({
+    morningAt: clockTime.optional(),
+    eveningAt: clockTime.optional(),
+    morningOn: z.boolean().optional(),
+    eveningOn: z.boolean().optional(),
+    everyMorning: z.boolean().optional(),
+  })
+  .strict();
+
 const emergencyBody = z.object({
   bloodType: z.string().max(8).nullable().optional(),
   allergies: z.string().max(300).nullable().optional(),
@@ -363,6 +379,75 @@ export function createApiRouter(deps: ApiDeps) {
         label: m.family.members.map((o) => o.displayName).join(', ') || 'กลุ่มที่มีแค่คุณ',
       })),
     });
+  });
+
+  /**
+   * When the digests go out. Family-wide, since the digest goes to the whole
+   * group; any member may change it, the same as any other shared record.
+   */
+  app.get('/family/digest', async (c) => {
+    const member = c.get('member');
+    const f = await deps.prisma.family.findUniqueOrThrow({
+      where: { id: member.familyId },
+      select: {
+        digestMorningAt: true,
+        digestEveningAt: true,
+        digestMorningOn: true,
+        digestEveningOn: true,
+        digestEveryMorning: true,
+      },
+    });
+    return c.json({
+      morningAt: toClock(f.digestMorningAt),
+      eveningAt: toClock(f.digestEveningAt),
+      morningOn: f.digestMorningOn,
+      eveningOn: f.digestEveningOn,
+      everyMorning: f.digestEveryMorning,
+    });
+  });
+
+  app.patch('/family/digest', async (c) => {
+    const member = c.get('member');
+    const parsed = digestSettingsBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'เวลาต้องเป็นแบบ 07:00 หรือ 07:30' }, 400);
+
+    const current = await deps.prisma.family.findUniqueOrThrow({
+      where: { id: member.familyId },
+      select: { digestMorningAt: true, digestEveningAt: true, digestMorningOn: true, digestEveningOn: true },
+    });
+    const next = {
+      morningAt: parsed.data.morningAt ? toMinutes(parsed.data.morningAt) : current.digestMorningAt,
+      eveningAt: parsed.data.eveningAt ? toMinutes(parsed.data.eveningAt) : current.digestEveningAt,
+      morningOn: parsed.data.morningOn ?? current.digestMorningOn,
+      eveningOn: parsed.data.eveningOn ?? current.digestEveningOn,
+    };
+
+    // Reminders only ever leave through a digest. With both switched off they
+    // would pile up unsent while /health went red — refuse rather than allow it.
+    if (!next.morningOn && !next.eveningOn) {
+      return c.json({ error: 'ต้องเปิดไว้อย่างน้อย 1 รอบ ไม่อย่างนั้นการเตือนจะไม่ถูกส่งเลย' }, 400);
+    }
+    // The digest calls itself "เช้า" or "เย็น" by the hour it goes out.
+    if (next.morningAt >= 12 * 60) {
+      return c.json({ error: 'สรุปเช้าต้องก่อนเที่ยง' }, 400);
+    }
+    if (next.eveningAt < 12 * 60) {
+      return c.json({ error: 'สรุปเย็นต้องหลังเที่ยง' }, 400);
+    }
+
+    await deps.prisma.family.update({
+      where: { id: member.familyId },
+      data: {
+        digestMorningAt: next.morningAt,
+        digestEveningAt: next.eveningAt,
+        digestMorningOn: next.morningOn,
+        digestEveningOn: next.eveningOn,
+        ...(parsed.data.everyMorning !== undefined
+          ? { digestEveryMorning: parsed.data.everyMorning }
+          : {}),
+      },
+    });
+    return c.json({ ok: true });
   });
 
   /** What the family has not set up yet — the checklist on the dashboard. */

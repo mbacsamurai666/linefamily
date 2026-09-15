@@ -23,6 +23,15 @@ model Family {
   timezone    String   @default("Asia/Bangkok")
   createdAt   DateTime @default(now())
 
+  /// When the digests go out, as minutes after local midnight (420 = 07:00).
+  digestMorningAt Int     @default(420)
+  digestEveningAt Int     @default(1200)
+  digestMorningOn Boolean @default(true)
+  digestEveningOn Boolean @default(true)
+  /// Send the morning digest even on a day with nothing due — the family asked
+  /// to hear from the bot every morning, and silence read as broken.
+  digestEveryMorning Boolean @default(true)
+
   members       Member[]
   events        Event[]
   transactions  Transaction[]

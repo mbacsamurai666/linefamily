@@ -60,6 +60,16 @@ export interface Notifier {
 export interface FamilyClockInfo {
   familyId: string;
   timezone: string;
+  /**
+   * When this family's digests go out, as minutes after local midnight.
+   * Omit to use the engine's configured morning and evening.
+   */
+  slots?: number[];
+  /**
+   * The one slot that sends even when nothing is due — the family's "every
+   * morning". Null or omitted: quiet days stay quiet.
+   */
+  quietDaySlot?: number | null;
 }
 
 export interface FamilyStore {

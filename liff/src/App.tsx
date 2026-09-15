@@ -16,6 +16,7 @@ import {
   type Loan,
   type MedicationItem,
   type Me,
+  type DigestSettings,
   type Emergency,
   type SetupItem,
   type SetupKey,
@@ -2527,12 +2528,144 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
 
   return (
     <div>
+      <DigestSettingsSection />
       <BillsSection openAdd={focus === 'bills'} />
       <DocumentsSection openAdd={focus === 'documents'} />
       <MedicationsSection openAdd={focus === 'medications'} />
       <ChoresSection openAdd={focus === 'chores'} />
       <EmergencySection openEdit={focus === 'emergency'} />
       <BackupSection />
+    </div>
+  );
+}
+
+/** Every half hour between two times, as "HH:mm". */
+function halfHours(fromHour: number, toHour: number): string[] {
+  const out: string[] = [];
+  for (let h = fromHour; h <= toHour; h++) {
+    for (const m of ['00', '30']) out.push(`${String(h).padStart(2, '0')}:${m}`);
+  }
+  return out;
+}
+
+const MORNING_TIMES = halfHours(4, 11);
+const EVENING_TIMES = halfHours(15, 23);
+
+/**
+ * When the bot talks to the group. The first week went three days without a
+ * word because nothing happened to be due — correct by the design at the time,
+ * and not what the family wanted — so the times, and whether a quiet morning
+ * still gets its message, are theirs to choose.
+ */
+function DigestSettingsSection() {
+  const [form, setForm] = useState<DigestSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ text: string; error?: boolean } | null>(null);
+
+  useEffect(() => {
+    api
+      .digestSettings()
+      .then(setForm)
+      .catch((e: Error) => setNote({ text: readableError(e), error: true }));
+  }, []);
+
+  if (!form) {
+    return (
+      <div className="dash-section" id="section-digest">
+        <div className="dash-section-heading">🔔 การแจ้งเตือนประจำวัน</div>
+        {note ? <p className="error">{note.text}</p> : <p className="loading">กำลังโหลด...</p>}
+      </div>
+    );
+  }
+
+  const update = (patch: Partial<DigestSettings>) => {
+    setForm({ ...form, ...patch });
+    setNote(null);
+  };
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.saveDigestSettings(form);
+      setNote({ text: 'บันทึกแล้ว — มีผลตั้งแต่รอบถัดไป' });
+    } catch (err) {
+      setNote({ text: readableError(err), error: true });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="dash-section" id="section-digest">
+      <div className="dash-section-heading">🔔 การแจ้งเตือนประจำวัน</div>
+      <form className="entry-form digest-settings" onSubmit={save}>
+        <div className="digest-row">
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.morningOn}
+              onChange={(e) => update({ morningOn: e.target.checked })}
+            />
+            สรุปเช้า
+          </label>
+          <select
+            aria-label="เวลาสรุปเช้า"
+            value={form.morningAt}
+            disabled={!form.morningOn}
+            onChange={(e) => update({ morningAt: e.target.value })}
+          >
+            {MORNING_TIMES.map((t) => (
+              <option key={t} value={t}>
+                {t} น.
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <label className={`checkbox-field digest-sub${form.morningOn ? '' : ' is-disabled'}`}>
+          <input
+            type="checkbox"
+            checked={form.everyMorning}
+            disabled={!form.morningOn}
+            onChange={(e) => update({ everyMorning: e.target.checked })}
+          />
+          ส่งทุกเช้า แม้วันนั้นไม่มีอะไรครบกำหนด
+          <span className="muted"> (บอกนัดใน 7 วันข้างหน้าแทน)</span>
+        </label>
+
+        <div className="digest-row">
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.eveningOn}
+              onChange={(e) => update({ eveningOn: e.target.checked })}
+            />
+            สรุปเย็น
+          </label>
+          <select
+            aria-label="เวลาสรุปเย็น"
+            value={form.eveningAt}
+            disabled={!form.eveningOn}
+            onChange={(e) => update({ eveningAt: e.target.value })}
+          >
+            {EVENING_TIMES.map((t) => (
+              <option key={t} value={t}>
+                {t} น.
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="muted">สรุปเย็นส่งเฉพาะวันที่มีอะไรต้องเตือน</div>
+
+        <button type="submit" className="form-submit" disabled={saving || (!form.morningOn && !form.eveningOn)}>
+          {saving ? 'กำลังบันทึก...' : 'บันทึกการแจ้งเตือน'}
+        </button>
+        {!form.morningOn && !form.eveningOn && (
+          <p className="error">ต้องเปิดไว้อย่างน้อย 1 รอบ ไม่อย่างนั้นการเตือนจะไม่ถูกส่งเลย</p>
+        )}
+        {note && <p className={note.error ? 'error' : 'muted'}>{note.text}</p>}
+      </form>
     </div>
   );
 }

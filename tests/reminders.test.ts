@@ -4,6 +4,7 @@ import { ReminderEngine, nextDigestSlot } from '../src/reminders/engine.js';
 import type {
   BudgetStore,
   Clock,
+  FamilyClockInfo,
   FamilyStore,
   JobLane,
   JobStore,
@@ -81,8 +82,9 @@ class MemoryStores implements JobStore, BudgetStore, Notifier, FamilyStore {
   }
 
   // ---- FamilyStore
+  family: FamilyClockInfo = { familyId: FAMILY, timezone: ZONE };
   async listActive() {
-    return [{ familyId: FAMILY, timezone: ZONE }];
+    return [this.family];
   }
 }
 
@@ -121,7 +123,7 @@ describe('nextDigestSlot', () => {
     ['2026-09-04T21:00', '2026-09-05T07:00'],
   ])('%s -> %s', (now, expected) => {
     const dt = DateTime.fromISO(now, { zone: ZONE });
-    expect(nextDigestSlot(dt, MORNING, EVENING).toFormat("yyyy-MM-dd'T'HH:mm")).toBe(expected);
+    expect(nextDigestSlot(dt, [MORNING * 60, EVENING * 60]).toFormat("yyyy-MM-dd'T'HH:mm")).toBe(expected);
     expect(base.isValid).toBe(true);
   });
 });
@@ -280,5 +282,85 @@ describe('urgent lane', () => {
     const row = stores.rows.find((r) => r.id === 'u2');
     expect(row?.lane).toBe('DIGEST');
     expect(row?.status).toBe('PENDING');
+  });
+});
+
+/**
+ * The family decides when it hears from the bot. The first week had three days
+ * of silence, because nothing happened to be due — correct by the old design,
+ * and not what anybody wanted.
+ */
+describe('digest times the family chose', () => {
+  const day = (hhmm: string) => DateTime.fromISO(`2026-09-15T${hhmm}`, { zone: ZONE });
+
+  async function runDay(stores: MemoryStores, from = '00:00', to = '23:59', reserve = 60) {
+    let cursor = day(from);
+    const engine = buildEngine(stores, { now: () => cursor }, reserve);
+    while (cursor <= day(to)) {
+      await engine.tick();
+      cursor = cursor.plus({ minutes: 1 });
+    }
+  }
+
+  it('says good morning every day, even with nothing due', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+
+    await runDay(stores);
+
+    expect(stores.pushes).toEqual([
+      { familyId: FAMILY, kind: 'digest', jobIds: [], at: expect.stringContaining('T07:00') },
+    ]);
+  });
+
+  it('keeps the evening quiet on a quiet day unless asked', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: null };
+
+    await runDay(stores);
+
+    expect(stores.pushes).toEqual([]);
+  });
+
+  it('does not say good morning at lunchtime after a restart', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+
+    await runDay(stores, '13:00', '19:00');
+
+    expect(stores.pushes).toEqual([]);
+  });
+
+  it('never spends the urgent reserve on a day with nothing in it', async () => {
+    const stores = new MemoryStores(500);
+    stores.used.set(`${FAMILY}:2026-09`, 450); // 50 left, under the 60 reserve
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420, 1200], quietDaySlot: 420 };
+
+    await runDay(stores);
+
+    expect(stores.pushes).toEqual([]);
+  });
+
+  it("sends at the family's own time, not the default", async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [390, 1260] }; // 06:30 and 21:00
+    stores.rows.push(job('dentist', day('10:00')));
+
+    await runDay(stores);
+
+    expect(stores.pushes).toHaveLength(1);
+    expect(stores.pushes[0]?.at).toContain('T06:30');
+    expect(stores.pushes[0]?.jobIds).toEqual(['dentist']);
+  });
+
+  it('with the evening switched off, the morning covers the whole day ahead', async () => {
+    const stores = new MemoryStores(500);
+    stores.family = { familyId: FAMILY, timezone: ZONE, slots: [420] };
+    stores.rows.push(job('late', day('21:30')));
+
+    await runDay(stores);
+
+    expect(stores.pushes).toHaveLength(1);
+    expect(stores.pushes[0]?.at).toContain('T07:00');
   });
 });

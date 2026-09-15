@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "Family" ADD COLUMN     "digestEveningAt" INTEGER NOT NULL DEFAULT 1200,
+ADD COLUMN     "digestEveningOn" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "digestEveryMorning" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "digestMorningAt" INTEGER NOT NULL DEFAULT 420,
+ADD COLUMN     "digestMorningOn" BOOLEAN NOT NULL DEFAULT true;
+

@@ -1,8 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
-import type { DateTime } from 'luxon';
+import { DateTime } from 'luxon';
 import type { messagingApi } from '@line/bot-sdk';
 import { buildDigestQuickReply, buildUrgentQuickReply, type DigestNames } from '../line/digestActions.js';
-import { renderDigestImage } from '../line/digestImage.js';
+import { renderDigestImage, type UpcomingLine } from '../line/digestImage.js';
+import { formatThaiDate } from '../line/format.js';
+import { listCalendar } from '../modules/calendar.js';
 import { buildDigest } from '../line/flex/digest.js';
 import type {
   BudgetStore,
@@ -86,14 +88,44 @@ export class PrismaBudgetStore implements BudgetStore {
   }
 }
 
+/** A family row's digest settings, in the shape the engine schedules by. */
+export function familyClock(r: {
+  id: string;
+  timezone: string;
+  digestMorningAt: number;
+  digestEveningAt: number;
+  digestMorningOn: boolean;
+  digestEveningOn: boolean;
+  digestEveryMorning: boolean;
+}): FamilyClockInfo {
+  const slots = [
+    ...(r.digestMorningOn ? [r.digestMorningAt] : []),
+    ...(r.digestEveningOn ? [r.digestEveningAt] : []),
+  ];
+  return {
+    familyId: r.id,
+    timezone: r.timezone,
+    slots,
+    quietDaySlot: r.digestMorningOn && r.digestEveryMorning ? r.digestMorningAt : null,
+  };
+}
+
 export class PrismaFamilyStore implements FamilyStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async listActive(): Promise<FamilyClockInfo[]> {
     const rows = await this.prisma.family.findMany({
-      select: { id: true, timezone: true },
+      select: {
+        id: true,
+        timezone: true,
+        digestMorningAt: true,
+        digestEveningAt: true,
+        digestMorningOn: true,
+        digestEveningOn: true,
+        digestEveryMorning: true,
+      },
     });
-    return rows.map((r) => ({ familyId: r.id, timezone: r.timezone }));
+    return rows.map((r) => familyClock(r));
   }
 }
 
@@ -122,11 +154,13 @@ export class LineNotifier implements Notifier {
     const to = await this.groupIdOf(familyId);
     if (!to) return 0;
 
-    const messages: messagingApi.Message[] = [buildDigest(jobs, slot, this.liffUrl)];
+    // A quiet day's digest has nothing due to list, so it looks a week ahead.
+    const upcoming = jobs.length === 0 ? await this.weekAhead(familyId, slot) : [];
+    const messages: messagingApi.Message[] = [buildDigest(jobs, slot, this.liffUrl, upcoming)];
 
     // The picture is the nice part, not the load-bearing part: if drawing or
     // storing it fails, the card still goes out on time.
-    const imageUrl = await this.storeDigestImage(familyId, jobs, slot).catch((err) => {
+    const imageUrl = await this.storeDigestImage(familyId, jobs, slot, upcoming).catch((err) => {
       this.log?.('digest image failed', { err: String(err) });
       return null;
     });
@@ -164,14 +198,35 @@ export class LineNotifier implements Notifier {
     };
   }
 
+  /** Appointments in the next seven days, worded for the digest. */
+  private async weekAhead(familyId: string, slot: DateTime): Promise<UpcomingLine[]> {
+    const zone = slot.zoneName ?? 'Asia/Bangkok';
+    const { items } = await listCalendar(
+      this.prisma,
+      familyId,
+      slot.startOf('day'),
+      slot.plus({ days: 7 }).endOf('day'),
+      zone,
+    );
+    return items
+      .map((ev) => ({ ev, start: DateTime.fromISO(ev.startAt, { zone }) }))
+      .filter(({ start }) => start >= slot)
+      .map(({ ev, start }) => ({
+        // "พ. 16 ก.ย." — the two-digit year adds nothing a week out.
+        when: `${formatThaiDate(start).replace(/ \d{2}$/, '')}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
+        title: ev.title,
+      }));
+  }
+
   private async storeDigestImage(
     familyId: string,
     jobs: ReminderJob[],
     slot: DateTime,
+    upcoming: UpcomingLine[] = [],
   ): Promise<string | null> {
     if (!this.baseUrl) return null;
 
-    const png = await renderDigestImage({ jobs, slot });
+    const png = await renderDigestImage({ jobs, slot, upcoming });
     const row = await this.prisma.digestImage.create({
       data: { familyId, png: new Uint8Array(png) },
       select: { id: true },

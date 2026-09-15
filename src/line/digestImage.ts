@@ -54,24 +54,43 @@ const KIND_COLOR: Record<JobKind, string> = {
 
 const ASSETS = join(process.cwd(), 'assets');
 
+/** An appointment coming up, already worded for the board: "พ. 16 ก.ย. 15:00". */
+export interface UpcomingLine {
+  when: string;
+  title: string;
+}
+
 export interface DigestImageInput {
   jobs: ReminderJob[];
   /** The digest slot, in the family's zone — morning or evening decides the mood. */
   slot: DateTime;
+  /**
+   * The week ahead, shown on a day with nothing due so the daily digest still
+   * says something worth reading.
+   */
+  upcoming?: UpcomingLine[];
 }
 
-export async function renderDigestImage({ jobs, slot }: DigestImageInput): Promise<Buffer> {
+export async function renderDigestImage({
+  jobs,
+  slot,
+  upcoming = [],
+}: DigestImageInput): Promise<Buffer> {
   registerAppFonts();
 
   const morning = slot.hour < 12;
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
-  const greeting = morning ? 'อรุณสวัสดิ์ครับ วันนี้มีแบบนี้' : 'ก่อนนอน เช็กอีกรอบนะครับ';
+  const greeting = morning
+    ? jobs.length > 0
+      ? 'อรุณสวัสดิ์ครับ วันนี้มีแบบนี้'
+      : 'อรุณสวัสดิ์ครับ วันนี้สบาย ๆ'
+    : 'ก่อนนอน เช็กอีกรอบนะครับ';
   const mood = morning ? 'wave' : 'sleepy';
 
   // Measuring needs a context, and the canvas needs the height measuring
   // produces — so lay the board out on a throwaway canvas first.
   const scratch = createCanvas(WIDTH, 10).getContext('2d');
-  const lines = layoutBoard(scratch, jobs);
+  const lines = jobs.length > 0 ? layoutBoard(scratch, jobs) : layoutQuietDay(upcoming);
 
   const boardTop = 250;
   const boardHeight = Math.max(220, 64 + lines.length * 46 + 40);
@@ -83,7 +102,8 @@ export async function renderDigestImage({ jobs, slot }: DigestImageInput): Promi
 
   drawBackdrop(ctx, height);
   drawSign(ctx, heading, `${formatThaiDate(slot)} · ${slot.toFormat('HH:mm')} น.`);
-  drawBoard(ctx, lines, boardTop, boardHeight, jobs.length);
+  const summary = jobs.length > 0 ? `ทั้งหมด ${jobs.length} รายการ` : 'วันนี้ไม่มีอะไรต้องเตือน';
+  drawBoard(ctx, lines, boardTop, boardHeight, summary);
   await drawMascots(ctx, height - PAD, greeting, mood);
 
   return canvas.toBuffer('image/png');
@@ -94,6 +114,23 @@ interface BoardLine {
   /** Section headings have no colour; items carry their kind's. */
   color?: string;
   heading?: boolean;
+}
+
+/**
+ * A day with nothing due: the week ahead instead, so the morning message is
+ * still worth opening. Seven lines at most — it is a glance, not the calendar.
+ */
+function layoutQuietDay(upcoming: UpcomingLine[]): BoardLine[] {
+  if (upcoming.length === 0) return [{ text: 'สัปดาห์นี้ยังว่างทั้งสัปดาห์ครับ', heading: true }];
+
+  const lines: BoardLine[] = [{ text: '7 วันข้างหน้า', heading: true }];
+  for (const item of upcoming.slice(0, 7)) {
+    lines.push({ text: `${item.when}  ${item.title}`, color: KIND_COLOR.EVENT });
+  }
+  if (upcoming.length > 7) {
+    lines.push({ text: `…และอีก ${upcoming.length - 7} นัด — เปิดแอปดูได้`, heading: true });
+  }
+  return lines;
 }
 
 /** Sections in the same order as the Flex digest, wrapped to the board's width. */
@@ -227,7 +264,7 @@ function drawBoard(
   lines: BoardLine[],
   top: number,
   height: number,
-  total: number,
+  summary: string,
 ): void {
   const w = WIDTH - PAD * 2;
   ctx.fillStyle = COLORS.boardEdge;
@@ -237,7 +274,7 @@ function drawBoard(
 
   ctx.font = `26px ${FONTS.bodyBold}`;
   ctx.fillStyle = COLORS.chalkMuted;
-  ctx.fillText(`ทั้งหมด ${total} รายการ`, PAD + 44, top + 54);
+  ctx.fillText(summary, PAD + 44, top + 54);
 
   let y = top + 104;
   for (const line of lines) {
