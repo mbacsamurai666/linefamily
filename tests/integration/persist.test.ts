@@ -941,4 +941,19 @@ describe('computeUpcoming', () => {
     expect(upcoming.next3d.map((i) => i.text)).toEqual(['อีก 2 วัน']);
     expect(upcoming.next7d.map((i) => i.text)).toEqual(['อีก 5 วัน']);
   });
+
+  it('shows an appointment once, however many times it is reminded', async () => {
+    await db.prisma.notificationJob.createMany({
+      data: [
+        { familyId, kind: 'EVENT', refId: 'swim', dueAt: NOW.plus({ days: 1 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ' } },
+        { familyId, kind: 'EVENT', refId: 'swim', dueAt: NOW.plus({ days: 2 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ' } },
+      ],
+    });
+
+    const upcoming = await computeUpcoming(db.prisma, familyId, NOW, 'Asia/Bangkok');
+    const all = [...upcoming.today, ...upcoming.next3d, ...upcoming.next7d];
+    expect(all.map((i) => i.text)).toEqual(['สอบว่ายน้ำ']);
+    // The one about to arrive, not the one furthest out.
+    expect(all[0]?.dueAt).toBe(NOW.plus({ days: 1 }).toJSDate().toISOString());
+  });
 });

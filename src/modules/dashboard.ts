@@ -44,7 +44,15 @@ export async function computeUpcoming(
   });
 
   const upcoming: Upcoming = { today: [], next3d: [], next7d: [] };
+  // One line per thing, not per reminder: an appointment reminded a week, a
+  // day and two hours ahead is three jobs, and reading the same appointment
+  // three times in a row looked like the bot had duplicated it. The soonest
+  // reminder wins, since that is the one about to arrive.
+  const seen = new Set<string>();
   for (const j of jobs) {
+    const itemKey = `${j.kind}:${j.refId}`;
+    if (seen.has(itemKey)) continue;
+    seen.add(itemKey);
     const item: UpcomingItem = {
       id: j.id,
       kind: j.kind,
