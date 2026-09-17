@@ -351,10 +351,9 @@ function UpcomingSection({ heading, items }: { heading: string; items: AgendaIte
         {items.map((item) => (
           <li key={item.id} className="agenda-item">
             <span className="badge">{kindLabel(item.kind)}</span>
-            <div className="agenda-text">
-              <div>{item.text}</div>
-              <div className="muted">{thaiTimeOnly(item.dueAt)}</div>
-            </div>
+            {/* The text already names the day and time; the reminder's own time
+                read as the appointment's and confused people. */}
+            <div className="agenda-text">{item.text}</div>
           </li>
         ))}
       </ul>

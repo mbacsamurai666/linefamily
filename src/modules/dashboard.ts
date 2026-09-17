@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
+import { formatRelativeDay } from '../line/format.js';
 
 /**
  * Read side for the Dashboard tab: upcoming items bucketed by how soon they
@@ -20,6 +21,9 @@ export interface Upcoming {
   next3d: UpcomingItem[];
   next7d: UpcomingItem[];
 }
+
+/** The "(พรุ่งนี้)" a reminder was worded with — true on the day it goes out, not on the day it is read. */
+const RELATIVE_DAY = / \((?:วันนี้|พรุ่งนี้|มะรืนนี้|อีก \d+ วัน|เลยมา \d+ วัน)\)/;
 
 export async function computeUpcoming(
   prisma: PrismaClient,
@@ -43,25 +47,36 @@ export async function computeUpcoming(
     take: 200,
   });
 
-  const upcoming: Upcoming = { today: [], next3d: [], next7d: [] };
-  // One line per thing, not per reminder: an appointment reminded a week, a
-  // day and two hours ahead is three jobs, and reading the same appointment
-  // three times in a row looked like the bot had duplicated it. The soonest
-  // reminder wins, since that is the one about to arrive.
+  const items: Array<{ item: UpcomingItem; at: DateTime }> = [];
+  // One line per thing, not per reminder: an appointment reminded a day and
+  // two hours ahead is two jobs, and reading it twice looked like the bot had
+  // duplicated it. A repeating appointment still lists each occurrence.
   const seen = new Set<string>();
   for (const j of jobs) {
-    const itemKey = `${j.kind}:${j.refId}`;
+    const payload = j.payload as { text?: string; at?: string };
+    const text = payload.text ?? '';
+    // Jobs queued before `at` existed fall back to the reminder's own time.
+    const at = payload.at ? DateTime.fromISO(payload.at, { zone }) : DateTime.fromJSDate(j.dueAt, { zone });
+    const itemKey = `${j.kind}:${j.refId}:${payload.at ?? text.replace(RELATIVE_DAY, '')}`;
     if (seen.has(itemKey)) continue;
     seen.add(itemKey);
-    const item: UpcomingItem = {
-      id: j.id,
-      kind: j.kind,
-      dueAt: j.dueAt.toISOString(),
-      text: (j.payload as { text?: string }).text ?? '',
-    };
-    const dueAt = DateTime.fromJSDate(j.dueAt);
-    if (dueAt <= endOfToday) upcoming.today.push(item);
-    else if (dueAt <= in3d) upcoming.next3d.push(item);
+    if (at < startOfToday || at > in7d) continue;
+
+    items.push({
+      at,
+      item: {
+        id: j.id,
+        kind: j.kind,
+        dueAt: at.toUTC().toISO() ?? j.dueAt.toISOString(),
+        text: payload.at ? text.replace(RELATIVE_DAY, ` (${formatRelativeDay(at, local)})`) : text.replace(RELATIVE_DAY, ''),
+      },
+    });
+  }
+
+  const upcoming: Upcoming = { today: [], next3d: [], next7d: [] };
+  for (const { item, at } of items.sort((a, b) => a.at.toMillis() - b.at.toMillis())) {
+    if (at <= endOfToday) upcoming.today.push(item);
+    else if (at <= in3d) upcoming.next3d.push(item);
     else upcoming.next7d.push(item);
   }
 

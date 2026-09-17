@@ -15,6 +15,7 @@ import {
   generateMonthSummaryJob,
   markChoreDone,
   markMedicationTaken,
+  refreshRecurring,
 } from '../../src/reminders/generate.js';
 import { computeNetWorth } from '../../src/modules/loanAssetDeposit.js';
 import { computeMoneyOverview, computeUpcoming } from '../../src/modules/dashboard.js';
@@ -942,18 +943,56 @@ describe('computeUpcoming', () => {
     expect(upcoming.next7d.map((i) => i.text)).toEqual(['อีก 5 วัน']);
   });
 
-  it('shows an appointment once, however many times it is reminded', async () => {
+  it('shows an appointment once, on its own day, however many times it is reminded', async () => {
+    const swim = NOW.plus({ days: 5 });
     await db.prisma.notificationJob.createMany({
       data: [
-        { familyId, kind: 'EVENT', refId: 'swim', dueAt: NOW.plus({ days: 1 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ' } },
-        { familyId, kind: 'EVENT', refId: 'swim', dueAt: NOW.plus({ days: 2 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ' } },
+        // A day ahead and two hours ahead, both worded on the day they go out.
+        { familyId, kind: 'EVENT', refId: 'swim', dueAt: swim.minus({ days: 1 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ (พรุ่งนี้)', at: swim.toISO() } },
+        { familyId, kind: 'EVENT', refId: 'swim', dueAt: swim.minus({ hours: 2 }).toJSDate(), payload: { text: 'สอบว่ายน้ำ (วันนี้)', at: swim.toISO() } },
       ],
     });
 
     const upcoming = await computeUpcoming(db.prisma, familyId, NOW, 'Asia/Bangkok');
-    const all = [...upcoming.today, ...upcoming.next3d, ...upcoming.next7d];
-    expect(all.map((i) => i.text)).toEqual(['สอบว่ายน้ำ']);
-    // The one about to arrive, not the one furthest out.
-    expect(all[0]?.dueAt).toBe(NOW.plus({ days: 1 }).toJSDate().toISOString());
+    expect(upcoming.today).toEqual([]);
+    expect(upcoming.next3d).toEqual([]);
+    // Counted by the appointment, and "พรุ่งนี้" re-worded for the day it is read.
+    expect(upcoming.next7d.map((i) => i.text)).toEqual(['สอบว่ายน้ำ (อีก 5 วัน)']);
+    expect(upcoming.next7d[0]?.dueAt).toBe(swim.toUTC().toISO());
+  });
+
+  it('fills in the time on reminders queued before it was recorded', async () => {
+    await persistDraft(
+      { kind: 'event', title: 'ไหว้เจ้าที่', category: 'OTHER', startAt: NOW.plus({ days: 2 }), allDay: true },
+      ctx(),
+    );
+    // Strip `at`, the way every job queued by the previous release looks.
+    const jobs = await db.prisma.notificationJob.findMany({ where: { kind: 'EVENT', status: 'PENDING' } });
+    for (const j of jobs) {
+      await db.prisma.notificationJob.update({
+        where: { id: j.id },
+        data: { payload: { text: (j.payload as { text: string }).text } },
+      });
+    }
+
+    await refreshRecurring(db.prisma, NOW);
+
+    const after = await db.prisma.notificationJob.findMany({ where: { kind: 'EVENT', status: 'PENDING' } });
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((j) => typeof (j.payload as { at?: string }).at === 'string')).toBe(true);
+  });
+
+  it('still lists each occurrence of a repeating appointment', async () => {
+    const first = NOW.plus({ days: 1 });
+    const second = NOW.plus({ days: 4 });
+    await db.prisma.notificationJob.createMany({
+      data: [
+        { familyId, kind: 'EVENT', refId: 'piano', dueAt: first.minus({ hours: 2 }).toJSDate(), payload: { text: 'เปียโน', at: first.toISO() } },
+        { familyId, kind: 'EVENT', refId: 'piano', dueAt: second.minus({ hours: 2 }).toJSDate(), payload: { text: 'เปียโน', at: second.toISO() } },
+      ],
+    });
+
+    const upcoming = await computeUpcoming(db.prisma, familyId, NOW, 'Asia/Bangkok');
+    expect([...upcoming.today, ...upcoming.next3d, ...upcoming.next7d]).toHaveLength(2);
   });
 });

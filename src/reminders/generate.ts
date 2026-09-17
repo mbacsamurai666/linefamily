@@ -28,7 +28,17 @@ async function replaceJobs(
     | 'TASK'
     | 'BIRTHDAY',
   refId: string,
-  jobs: Array<{ familyId: string; dueAt: Date; lane?: 'DIGEST' | 'URGENT'; text: string }>,
+  jobs: Array<{
+    familyId: string;
+    dueAt: Date;
+    lane?: 'DIGEST' | 'URGENT';
+    text: string;
+    /**
+     * When the thing itself happens, as opposed to when this reminder about it
+     * goes out — what the dashboard lists and counts by.
+     */
+    at?: Date;
+  }>,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     // Cancel only what has not gone out yet — a reminder already delivered
@@ -40,7 +50,7 @@ async function replaceJobs(
 
     for (const job of jobs) {
       const lane = job.lane ?? 'DIGEST';
-      const payload = { text: job.text };
+      const payload = { text: job.text, ...(job.at ? { at: job.at.toISOString() } : {}) };
 
       // Revive a slot this same call just cancelled. Scoping the update to
       // CANCELLED is what stops an edit from resurrecting — and re-sending —
@@ -103,7 +113,7 @@ export async function generateEventJobs(
   const who = attendeeNames.length > 0 ? attendeeNames.join(', ') : event.owner?.displayName;
   const repeat = event.rrule ? ` · ${recurrenceLabel(event.rrule)}` : '';
 
-  const jobs: Array<{ familyId: string; dueAt: Date; text: string }> = [];
+  const jobs: Array<{ familyId: string; dueAt: Date; text: string; at: Date }> = [];
 
   for (const startAt of eventOccurrences(event.startAt, event.rrule, zone, now, event.exdates)) {
     for (const dueAt of futureOnly(
@@ -113,6 +123,7 @@ export async function generateEventJobs(
       jobs.push({
         familyId: event.familyId,
         dueAt: dueAt.toJSDate(),
+        at: startAt.toJSDate(),
         text: [
           `[${label}] ${event.title}`,
           formatThaiDateTime(startAt, event.allDay),
@@ -184,7 +195,7 @@ export async function generateBillJobs(
     })
   )?.timezone ?? 'Asia/Bangkok';
 
-  const jobs: Array<{ familyId: string; dueAt: Date; text: string }> = [];
+  const jobs: Array<{ familyId: string; dueAt: Date; text: string; at: Date }> = [];
 
   for (let i = 0; i < monthsAhead; i++) {
     const month = now.setZone(zone).plus({ months: i });
@@ -201,6 +212,7 @@ export async function generateBillJobs(
       jobs.push({
         familyId: bill.familyId,
         dueAt: dueAt.toJSDate(),
+        at: due.toJSDate(),
         text: `[บิล] ${bill.name} ${amount} — ครบกำหนด ${due.toFormat('d MMM')} (${formatRelativeDay(due, dueAt)})`,
       });
     }
@@ -304,6 +316,7 @@ export async function generateDocumentJobs(
   ).map((dueAt) => ({
     familyId: doc.familyId,
     dueAt: dueAt.toJSDate(),
+    at: expires.toJSDate(),
     text: `[เอกสาร] ${doc.name}${owner ? ` ของ${owner}` : ''} หมดอายุ ${formatThaiDateTime(expires, true)} (${formatRelativeDay(expires, dueAt)})`,
   }));
 
@@ -348,11 +361,13 @@ export async function generateBirthdayJobs(
     {
       familyId: member.familyId,
       dueAt: next.minus({ days: 1 }).toJSDate(),
+      at: next.toJSDate(),
       text: `🎂 พรุ่งนี้วันเกิด ${member.displayName}${turning > 0 ? ` ครบ ${turning} ปี` : ''}`,
     },
     {
       familyId: member.familyId,
       dueAt: next.toJSDate(),
+      at: next.toJSDate(),
       text: `🎂 วันนี้วันเกิด ${member.displayName}${turning > 0 ? ` ครบ ${turning} ปี` : ''} — อย่าลืมอวยพรนะครับ`,
     },
   ]);
@@ -373,6 +388,26 @@ export async function refreshRecurring(prisma: PrismaClient, now: DateTime): Pro
   }
   for (const event of events) {
     await generateEventJobs(prisma, event.id, now);
+  }
+
+  // Reminders queued before they carried the time of the thing itself. The
+  // dashboard needs that time, so re-plan those once; afterwards none are left.
+  const stale = (
+    await prisma.notificationJob.findMany({
+      where: { status: 'PENDING', kind: { in: ['EVENT', 'BILL', 'DOCUMENT', 'TASK', 'LOAN_DUE'] } },
+      select: { kind: true, refId: true, payload: true },
+    })
+  ).filter((j) => !(j.payload as { at?: string } | null)?.at);
+  const regenerate = {
+    EVENT: generateEventJobs,
+    BILL: (p: PrismaClient, id: string, n: DateTime) => generateBillJobs(p, id, n),
+    DOCUMENT: generateDocumentJobs,
+    TASK: generateTaskJobs,
+    LOAN_DUE: generateLoanJobs,
+  } as const;
+  for (const key of new Set(stale.map((j) => `${j.kind}:${j.refId}`))) {
+    const [kind, refId] = key.split(':') as [keyof typeof regenerate, string];
+    await regenerate[kind](prisma, refId, now);
   }
 }
 
@@ -409,6 +444,7 @@ export async function generateTaskJobs(
   ).map((jobDueAt) => ({
     familyId: task.familyId,
     dueAt: jobDueAt.toJSDate(),
+    at: dueAt.toJSDate(),
     text: `[งาน] ${task.title}${who ? ` — ${who}` : ''} ครบกำหนด ${formatThaiDateTime(dueAt, true)} (${formatRelativeDay(dueAt, jobDueAt)})`,
   }));
 
@@ -443,6 +479,7 @@ export async function generateLoanJobs(
   ).map((jobDueAt) => ({
     familyId: loan.familyId,
     dueAt: jobDueAt.toJSDate(),
+    at: dueAt.toJSDate(),
     text: `[เงินกู้] ${loan.borrowerName} ครบกำหนดคืน ${formatSatang(outstanding)} บาท ${formatThaiDateTime(dueAt, true)} (${formatRelativeDay(dueAt, jobDueAt)})`,
   }));
 
