@@ -225,6 +225,7 @@ export class LineNotifier implements Notifier {
         // "พ. 16 ก.ย." — the two-digit year adds nothing a week out.
         when: `${formatThaiDate(start).replace(/ \d{2}$/, '')}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
         title: ev.title,
+        daysAway: Math.round(start.startOf('day').diff(slot.startOf('day'), 'days').days),
       }));
   }
 

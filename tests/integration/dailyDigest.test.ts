@@ -97,6 +97,9 @@ describe('a quiet morning', () => {
     expect(card.altText).toBe('สรุปเช้านี้ — วันนี้ไม่มีอะไรต้องเตือน');
     expect(JSON.stringify(card.contents)).toContain('พาแม่ไปหาหมอ');
     expect(JSON.stringify(card.contents)).toContain('พฤ. 17 ก.ย. 15:00');
+    // Grouped the same way as the app's หน้าหลัก.
+    expect(JSON.stringify(card.contents)).toContain('ใน 3 วัน (1)');
+    expect(JSON.stringify(card.contents)).not.toContain('ใน 7 วัน');
   });
 
   it('stays quiet when the family turned the daily morning off', async () => {

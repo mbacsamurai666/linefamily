@@ -3,7 +3,16 @@ import { join } from 'node:path';
 import { createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
 import type { DateTime } from 'luxon';
 import type { JobKind, ReminderJob } from '../reminders/ports.js';
-import { SECTION_LABEL, SECTION_ORDER } from './flex/digest.js';
+import {
+  groupUpcoming,
+  quietIntro,
+  SECTION_LABEL,
+  SECTION_ORDER,
+  UPCOMING_MAX,
+  type UpcomingLine,
+} from './flex/digest.js';
+
+export type { UpcomingLine };
 import { FONTS, registerAppFonts } from './fonts.js';
 import { formatThaiDate } from './format.js';
 
@@ -54,12 +63,6 @@ const KIND_COLOR: Record<JobKind, string> = {
 
 const ASSETS = join(process.cwd(), 'assets');
 
-/** An appointment coming up, already worded for the board: "พ. 16 ก.ย. 15:00". */
-export interface UpcomingLine {
-  when: string;
-  title: string;
-}
-
 export interface DigestImageInput {
   jobs: ReminderJob[];
   /** The digest slot, in the family's zone — morning or evening decides the mood. */
@@ -81,7 +84,7 @@ export async function renderDigestImage({
   const morning = slot.hour < 12;
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
   const greeting = morning
-    ? jobs.length > 0
+    ? jobs.length > 0 || upcoming.some((u) => u.daysAway <= 0)
       ? 'อรุณสวัสดิ์ครับ วันนี้มีแบบนี้'
       : 'อรุณสวัสดิ์ครับ วันนี้สบาย ๆ'
     : jobs.length > 0
@@ -104,11 +107,22 @@ export async function renderDigestImage({
 
   drawBackdrop(ctx, height);
   drawSign(ctx, heading, `${formatThaiDate(slot)} · ${slot.toFormat('HH:mm')} น.`);
-  const summary = jobs.length > 0 ? `ทั้งหมด ${jobs.length} รายการ` : `${morning ? 'วันนี้' : 'คืนนี้'}ไม่มีอะไรต้องเตือน`;
+  const summary = jobs.length > 0 ? `ทั้งหมด ${jobs.length} รายการ` : quietIntro(upcoming, morning);
   drawBoard(ctx, lines, boardTop, boardHeight, summary);
   await drawMascots(ctx, height - PAD, greeting, mood);
 
   return canvas.toBuffer('image/png');
+}
+
+/**
+ * The board's fonts have no emoji, so ❌ or 💋 would draw as an empty box.
+ * The card beside the picture keeps them; the picture simply leaves them out.
+ */
+export function boardText(text: string): string {
+  return text
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 interface BoardLine {
@@ -125,12 +139,15 @@ interface BoardLine {
 function layoutQuietDay(upcoming: UpcomingLine[]): BoardLine[] {
   if (upcoming.length === 0) return [{ text: 'สัปดาห์นี้ยังว่างทั้งสัปดาห์ครับ', heading: true }];
 
-  const lines: BoardLine[] = [{ text: '7 วันข้างหน้า', heading: true }];
-  for (const item of upcoming.slice(0, 7)) {
-    lines.push({ text: `${item.when}  ${item.title}`, color: KIND_COLOR.EVENT });
+  const lines: BoardLine[] = [];
+  for (const group of groupUpcoming(upcoming)) {
+    lines.push({ text: `${group.label} (${group.items.length})`, heading: true });
+    for (const item of group.items) {
+      lines.push({ text: `${item.when}  ${boardText(item.title)}`, color: KIND_COLOR.EVENT });
+    }
   }
-  if (upcoming.length > 7) {
-    lines.push({ text: `…และอีก ${upcoming.length - 7} นัด — เปิดแอปดูได้`, heading: true });
+  if (upcoming.length > UPCOMING_MAX) {
+    lines.push({ text: `…และอีก ${upcoming.length - UPCOMING_MAX} นัด — เปิดแอปดูได้`, heading: true });
   }
   return lines;
 }
@@ -154,7 +171,7 @@ function layoutBoard(ctx: SKRSContext2D, jobs: ReminderJob[]): BoardLine[] {
     lines.push({ text: `${SECTION_LABEL[kind]} (${inKind.length})`, heading: true });
     for (const job of inKind) {
       ctx.font = `30px ${FONTS.body}`;
-      const [first, ...rest] = wrap(ctx, job.payload.text, maxWidth, 2);
+      const [first, ...rest] = wrap(ctx, boardText(job.payload.text), maxWidth, 2);
       lines.push({ text: first ?? '', color: KIND_COLOR[kind] });
       for (const more of rest) lines.push({ text: more });
     }

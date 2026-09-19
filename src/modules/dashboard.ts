@@ -34,8 +34,10 @@ export async function computeUpcoming(
   const local = now.setZone(zone);
   const startOfToday = local.startOf('day');
   const endOfToday = local.endOf('day');
-  const in3d = startOfToday.plus({ days: 3 });
-  const in7d = startOfToday.plus({ days: 7 });
+  // Whole days, the same groups as the digest: today, the next three days,
+  // then the rest of the week.
+  const in3d = startOfToday.plus({ days: 3 }).endOf('day');
+  const in7d = startOfToday.plus({ days: 7 }).endOf('day');
 
   const jobs = await prisma.notificationJob.findMany({
     where: {

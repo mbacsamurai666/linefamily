@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
-import { renderDigestImage } from '../src/line/digestImage.js';
+import { boardText, renderDigestImage } from '../src/line/digestImage.js';
 import type { JobKind, ReminderJob } from '../src/reminders/ports.js';
 
 const ZONE = 'Asia/Bangkok';
@@ -70,5 +70,12 @@ describe('the digest picture', () => {
     const evening = await renderDigestImage({ jobs, slot: EVENING });
 
     expect(morning.equals(evening)).toBe(false);
+  });
+});
+
+describe('boardText', () => {
+  it('leaves out emoji the board font cannot draw', () => {
+    expect(boardText('สอบว่ายน้ำ ❌ห้ามลืม❌ — Yui💋')).toBe('สอบว่ายน้ำ ห้ามลืม — Yui');
+    expect(boardText('ซ่อมบ้าน คุณพิษณุ')).toBe('ซ่อมบ้าน คุณพิษณุ');
   });
 });

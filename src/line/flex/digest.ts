@@ -69,17 +69,45 @@ function section(kind: JobKind, jobs: ReminderJob[]): messagingApi.FlexBox {
   };
 }
 
+/** An appointment coming up, already worded for the digest: "พ. 16 ก.ย. 15:00". */
+export interface UpcomingLine {
+  when: string;
+  title: string;
+  /** Calendar days from the digest's own day: 0 is today. */
+  daysAway: number;
+}
+
+/** Most lines a quiet day lists — it is a glance, not the calendar. */
+export const UPCOMING_MAX = 7;
+
+/**
+ * The week ahead in the same three groups as the app's หน้าหลัก, so the
+ * message and the page it opens read alike. Empty groups are left out.
+ */
+export function groupUpcoming(upcoming: UpcomingLine[]): Array<{ label: string; items: UpcomingLine[] }> {
+  const shown = upcoming.slice(0, UPCOMING_MAX);
+  return [
+    { label: 'วันนี้', items: shown.filter((u) => u.daysAway <= 0) },
+    { label: 'ใน 3 วัน', items: shown.filter((u) => u.daysAway >= 1 && u.daysAway <= 3) },
+    { label: 'ใน 7 วัน', items: shown.filter((u) => u.daysAway >= 4) },
+  ].filter((g) => g.items.length > 0);
+}
+
+/** What the top line says: a quiet day with an all-day appointment is not "nothing". */
+export function quietIntro(upcoming: UpcomingLine[], morning: boolean): string {
+  const today = upcoming.filter((u) => u.daysAway <= 0).length;
+  if (morning && today > 0) return `วันนี้มีนัด ${today} รายการ`;
+  return `${morning ? 'วันนี้' : 'คืนนี้'}ไม่มีอะไรต้องเตือน`;
+}
+
 /**
  * A day with nothing due still gets its morning message — the family asked
  * for one every day — so it carries the week ahead instead of an empty card.
  */
-function quietDay(
-  upcoming: Array<{ when: string; title: string }>,
-  morning: boolean,
-): messagingApi.FlexComponent[] {
+function quietDay(upcoming: UpcomingLine[], morning: boolean): messagingApi.FlexComponent[] {
   const intro: messagingApi.FlexText = {
     type: 'text',
-    text: morning ? 'วันนี้ไม่มีอะไรต้องเตือนครับ ☀️' : 'คืนนี้ไม่มีอะไรต้องเตือนครับ 🌙',
+    text: `${quietIntro(upcoming, morning)}ครับ ${morning ? '☀️' : '🌙'}`,
     size: 'sm',
     color: COLORS.text,
     margin: 'md',
@@ -92,22 +120,15 @@ function quietDay(
     ];
   }
 
-  return [
-    intro,
-    {
+  const groups = groupUpcoming(upcoming).map(
+    (g): messagingApi.FlexBox => ({
       type: 'box',
       layout: 'vertical',
       spacing: 'xs',
       margin: 'md',
       contents: [
-        {
-          type: 'text',
-          text: `7 วันข้างหน้า (${upcoming.length})`,
-          size: 'xs',
-          weight: 'bold',
-          color: COLORS.muted,
-        },
-        ...upcoming.slice(0, 7).map(
+        { type: 'text', text: `${g.label} (${g.items.length})`, size: 'xs', weight: 'bold', color: COLORS.muted },
+        ...g.items.map(
           (u): messagingApi.FlexText => ({
             type: 'text',
             text: `• ${u.when}  ${u.title}`,
@@ -117,16 +138,32 @@ function quietDay(
           }),
         ),
       ],
-    },
-  ];
+    }),
+  );
+  if (upcoming.length > UPCOMING_MAX) {
+    groups.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'sm',
+      contents: [
+        {
+          type: 'text',
+          text: `…และอีก ${upcoming.length - UPCOMING_MAX} นัด — เปิดแอปดูได้`,
+          size: 'xs',
+          color: COLORS.muted,
+        },
+      ],
+    });
+  }
+  return [intro, ...groups];
 }
 
 export function buildDigest(
   jobs: ReminderJob[],
   slot: DateTime,
   liffUrl?: string,
-  /** The week ahead, for a day with nothing due: "พ. 16 ก.ย. 15:00" + title. */
-  upcoming: Array<{ when: string; title: string }> = [],
+  /** The week ahead, for a day with nothing due. */
+  upcoming: UpcomingLine[] = [],
 ): messagingApi.FlexMessage {
   const morning = slot.hour < 12;
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
@@ -148,7 +185,7 @@ export function buildDigest(
   return {
     type: 'flex',
     altText: quiet
-      ? `${heading} — ${morning ? 'วันนี้' : 'คืนนี้'}ไม่มีอะไรต้องเตือน`
+      ? `${heading} — ${quietIntro(upcoming, morning)}`
       : `${heading} — มี ${jobs.length} รายการ`,
     contents: {
       type: 'bubble',
