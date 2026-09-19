@@ -120,6 +120,29 @@ describe('a quiet morning', () => {
   });
 });
 
+describe('an all-day appointment', () => {
+  it("is in that morning's digest, not only the night before", async () => {
+    // ไหว้เจ้าที่ on Saturday 19 Sep: stored at midnight, entered a week before.
+    const event = await db.prisma.event.create({
+      data: {
+        familyId,
+        title: 'ไหว้เจ้าที่',
+        allDay: true,
+        startAt: DateTime.fromISO('2026-09-19T00:00', { zone: ZONE }).toJSDate(),
+      },
+    });
+    await generateEventJobs(db.prisma, event.id, DateTime.fromISO('2026-09-10T12:00', { zone: ZONE }));
+    const { api: line, pushed } = fakeLine();
+
+    await engineAt(() => DateTime.fromISO('2026-09-19T07:00', { zone: ZONE }), line).tick();
+
+    expect(pushed).toHaveLength(1);
+    const card = JSON.stringify(pushed[0]!.messages[0]);
+    expect(card).toContain('ไหว้เจ้าที่');
+    expect(card).toContain('(วันนี้)');
+  });
+});
+
 describe('a quiet evening', () => {
   it('says good night when the family asked for every evening', async () => {
     await db.prisma.family.update({ where: { id: familyId }, data: { digestEveryEvening: true } });

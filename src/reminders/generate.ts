@@ -116,8 +116,13 @@ export async function generateEventJobs(
   const jobs: Array<{ familyId: string; dueAt: Date; text: string; at: Date }> = [];
 
   for (const startAt of eventOccurrences(event.startAt, event.rrule, zone, now, event.exdates)) {
+    // An all-day appointment is stored at midnight, so "two hours before"
+    // meant 22:00 the night before and nothing was ever said on the day
+    // itself. Count from 09:00 instead — the same hour bills and documents
+    // use — so the short reminder lands in that morning's digest.
+    const anchor = event.allDay ? startAt.set({ hour: 9, minute: 0 }) : startAt;
     for (const dueAt of futureOnly(
-      event.reminderOffsets.map((min) => startAt.minus({ minutes: min })),
+      event.reminderOffsets.map((min) => anchor.minus({ minutes: min })),
       now,
     )) {
       jobs.push({
@@ -380,7 +385,13 @@ export async function generateBirthdayJobs(
 export async function refreshRecurring(prisma: PrismaClient, now: DateTime): Promise<void> {
   const [members, events] = await Promise.all([
     prisma.member.findMany({ where: { birthDate: { not: null } }, select: { id: true } }),
-    prisma.event.findMany({ where: { rrule: { not: null } }, select: { id: true } }),
+    // Every appointment still ahead, not only repeating ones: re-planning is
+    // idempotent, and it carries a change in how reminders are timed to what
+    // was entered before it. There are tens of these, not thousands.
+    prisma.event.findMany({
+      where: { OR: [{ rrule: { not: null } }, { startAt: { gte: now.minus({ days: 1 }).toJSDate() } }] },
+      select: { id: true },
+    }),
   ]);
 
   for (const member of members) {

@@ -218,7 +218,9 @@ export class LineNotifier implements Notifier {
     );
     return items
       .map((ev) => ({ ev, start: DateTime.fromISO(ev.startAt, { zone }) }))
-      .filter(({ start }) => start >= slot)
+      // An all-day appointment today starts at midnight, before any digest —
+      // but it is still today's, and the most useful line on the card.
+      .filter(({ ev, start }) => start >= slot || (ev.allDay && start.hasSame(slot, 'day')))
       .map(({ ev, start }) => ({
         // "พ. 16 ก.ย." — the two-digit year adds nothing a week out.
         when: `${formatThaiDate(start).replace(/ \d{2}$/, '')}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
