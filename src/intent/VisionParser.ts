@@ -115,6 +115,18 @@ export interface VisionParserOptions {
 
 type PhotoReading = z.infer<typeof responseSchema>;
 
+/**
+ * Measured on the family's school notice (gpt-5-mini): default effort ~18s,
+ * 'low' 7–8s with every title right, 'minimal' ~4s but copying stray symbols
+ * such as "(✗)" into titles.
+ */
+const VISION_EFFORT = 'low' as const;
+
+/** Only reasoning models take an effort; anything else rejects it. */
+function takesReasoning(model: string): boolean {
+  return /^(?:gpt-5|o\d)/.test(model);
+}
+
 export class VisionParser {
   readonly name = 'vision';
 
@@ -164,8 +176,11 @@ export class VisionParser {
         text: {
           format: { type: 'json_schema', name: 'family_photo', schema: jsonSchema },
         },
+        // Reading printed dates off a notice needs little thought; the default
+        // effort spent ~18s on it for the same answer.
+        ...(takesReasoning(model) ? { reasoning: { effort: VISION_EFFORT } } : {}),
       },
-      { timeout: timeoutMs },
+      { timeout: timeoutMs, maxRetries: 0 },
     );
 
     const raw = response.output_text;
