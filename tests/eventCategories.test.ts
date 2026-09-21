@@ -11,6 +11,9 @@ describe('guessEventCategory', () => {
     ['กิจกรรมลูกเสือ', 'SCHOOL'],
     ['ปิดภาคเรียน', 'SCHOOL'],
     ['October Course', 'SCHOOL'],
+    ['เลิกเรียน 16.00 น.', 'SCHOOL'],
+    ['ประเมินพัฒนาการระดับปฐมวัย', 'SCHOOL'],
+    ['น้องเอ ขึ้นบ้านใหม่', 'SOCIAL'],
     // Trips.
     ['เที่ยว จูไห', 'TRAVEL'],
     ['ทริปเชียงใหม่', 'TRAVEL'],
