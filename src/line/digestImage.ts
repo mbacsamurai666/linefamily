@@ -2,12 +2,12 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
 import type { DateTime } from 'luxon';
+import type { EventCategory } from '../intent/categories.js';
 import type { JobKind, ReminderJob } from '../reminders/ports.js';
 import {
+  digestSections,
   groupUpcoming,
   quietIntro,
-  SECTION_LABEL,
-  SECTION_ORDER,
   UPCOMING_MAX,
   type UpcomingLine,
 } from './flex/digest.js';
@@ -59,6 +59,17 @@ const KIND_COLOR: Record<JobKind, string> = {
   BUDGET_ALERT: '#f0857d',
   MONTH_SUMMARY: '#d7c2f0',
   BIRTHDAY: '#f6a8c6',
+};
+
+/** Appointment kinds in the app's colours (liff/src/format.ts), so a school line looks like one there. */
+const EVENT_KIND_COLOR: Record<EventCategory, string> = {
+  SCHOOL: '#a996f0',
+  TRAVEL: '#f08fb4',
+  WORK: '#6fd49a',
+  MEDICAL: '#6fb7ef',
+  GOVERNMENT: '#c3c7cf',
+  SOCIAL: '#f2a25c',
+  OTHER: '#9fe0b4',
 };
 
 const ASSETS = join(process.cwd(), 'assets');
@@ -154,25 +165,18 @@ function layoutQuietDay(upcoming: UpcomingLine[]): BoardLine[] {
 
 /** Sections in the same order as the Flex digest, wrapped to the board's width. */
 function layoutBoard(ctx: SKRSContext2D, jobs: ReminderJob[]): BoardLine[] {
-  const grouped = new Map<JobKind, ReminderJob[]>();
-  for (const job of jobs) {
-    const bucket = grouped.get(job.kind);
-    if (bucket) bucket.push(job);
-    else grouped.set(job.kind, [job]);
-  }
-
   const lines: BoardLine[] = [];
   const maxWidth = WIDTH - PAD * 2 - 100;
 
-  for (const kind of SECTION_ORDER) {
-    const inKind = grouped.get(kind);
-    if (!inKind) continue;
-
-    lines.push({ text: `${SECTION_LABEL[kind]} (${inKind.length})`, heading: true });
-    for (const job of inKind) {
+  for (const section of digestSections(jobs)) {
+    lines.push({ text: `${section.label} (${section.items.length})`, heading: true });
+    for (const item of section.items) {
       ctx.font = `30px ${FONTS.body}`;
-      const [first, ...rest] = wrap(ctx, boardText(job.payload.text), maxWidth, 2);
-      lines.push({ text: first ?? '', color: KIND_COLOR[kind] });
+      const [first, ...rest] = wrap(ctx, boardText(item.text), maxWidth, 2);
+      lines.push({
+        text: first ?? '',
+        color: section.category ? EVENT_KIND_COLOR[section.category] : KIND_COLOR[section.kind],
+      });
       for (const more of rest) lines.push({ text: more });
     }
   }

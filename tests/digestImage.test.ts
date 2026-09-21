@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
 import { boardText, renderDigestImage } from '../src/line/digestImage.js';
+import { digestSections } from '../src/line/flex/digest.js';
 import type { JobKind, ReminderJob } from '../src/reminders/ports.js';
 
 const ZONE = 'Asia/Bangkok';
@@ -77,5 +78,40 @@ describe('boardText', () => {
   it('leaves out emoji the board font cannot draw', () => {
     expect(boardText('สอบว่ายน้ำ ❌ห้ามลืม❌ — Yui💋')).toBe('สอบว่ายน้ำ ห้ามลืม — Yui');
     expect(boardText('ซ่อมบ้าน คุณพิษณุ')).toBe('ซ่อมบ้าน คุณพิษณุ');
+  });
+});
+
+describe('digestSections', () => {
+  const job = (id: string, text: string, kind: JobKind = 'EVENT'): ReminderJob => ({
+    id,
+    familyId: 'f',
+    kind,
+    refId: id,
+    dueAt: MORNING.toJSDate(),
+    lane: 'DIGEST',
+    payload: { text },
+  });
+
+  it('splits appointments by kind, school first, and drops the "[kind]" the heading now says', () => {
+    const sections = digestSections([
+      job('a', '[นัด] ไหว้เจ้าที่ ส. 19 ก.ย. 69 (พรุ่งนี้)'),
+      job('b', '[โรงเรียน] สอบปลายภาค พ. 23 ก.ย. 69 (พรุ่งนี้)'),
+      job('c', '[เที่ยว] เที่ยวจูไห่ พฤ. 1 ต.ค. 69 – พ. 7 ต.ค. 69 (อีก 7 วัน)'),
+      job('d', '[ยา] แม่ — ยาความดัน เวลา 08:00', 'MEDICATION'),
+      job('e', '[อื่นๆ] สั่งเหล็ก ส. 19 ก.ย. 69 (พรุ่งนี้)'),
+    ]);
+
+    expect(sections.map((s) => `${s.icon}${s.label} (${s.items.length})`)).toEqual([
+      'ยา (1)',
+      '🏫 โรงเรียน (1)',
+      '✈️ เที่ยว (1)',
+      '📌 นัด (2)',
+    ]);
+    expect(sections[1]?.items[0]?.text).toBe('สอบปลายภาค พ. 23 ก.ย. 69 (พรุ่งนี้)');
+    // Queued before "อื่นๆ" became "นัด", still lands with the rest.
+    expect(sections[3]?.items.map((i) => i.text)).toEqual([
+      'ไหว้เจ้าที่ ส. 19 ก.ย. 69 (พรุ่งนี้)',
+      'สั่งเหล็ก ส. 19 ก.ย. 69 (พรุ่งนี้)',
+    ]);
   });
 });

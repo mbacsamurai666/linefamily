@@ -1,6 +1,7 @@
 import type { messagingApi } from '@line/bot-sdk';
 import type { DateTime } from 'luxon';
 import type { JobKind, ReminderJob } from '../../reminders/ports.js';
+import { CATEGORY_LABEL, type EventCategory } from '../../intent/categories.js';
 import { formatThaiDate } from '../format.js';
 
 /**
@@ -42,7 +43,79 @@ const COLORS = {
   text: '#111111',
 } as const;
 
-function section(kind: JobKind, jobs: ReminderJob[]): messagingApi.FlexBox {
+/** Appointment kinds in the order the family reads them, each with its mark. */
+const EVENT_KIND_ORDER: Array<{ category: EventCategory; icon: string }> = [
+  { category: 'SCHOOL', icon: '🏫' },
+  { category: 'TRAVEL', icon: '✈️' },
+  { category: 'WORK', icon: '💼' },
+  { category: 'MEDICAL', icon: '🏥' },
+  { category: 'GOVERNMENT', icon: '🏛️' },
+  { category: 'SOCIAL', icon: '🎉' },
+  { category: 'OTHER', icon: '📌' },
+];
+
+/** "[โรงเรียน] สอบปลายภาค …" — the kind an appointment reminder was worded with. */
+const KIND_PREFIX = /^\[([^\]]+)\]\s*/;
+const CATEGORY_BY_LABEL = new Map<string, EventCategory>([
+  ...(Object.entries(CATEGORY_LABEL) as Array<[EventCategory, string]>).map(
+    ([category, label]) => [label, category] as [string, EventCategory],
+  ),
+  // Reminders queued before "อื่นๆ" was renamed.
+  ['อื่นๆ', 'OTHER'],
+]);
+
+export interface DigestSection {
+  kind: JobKind;
+  /** "🏫 " for an appointment kind; empty for everything else. */
+  icon: string;
+  /** Set on an appointment section. */
+  category?: EventCategory;
+  label: string;
+  /** Each item's line, with any "[kind]" prefix the heading now says. */
+  items: Array<{ job: ReminderJob; text: string }>;
+}
+
+/**
+ * What a digest lists, section by section. Appointments are split by kind —
+ * school, trips, work, the rest — since "นัดหมาย (9)" with the kinds mixed
+ * together made a school notice's week hard to read at a glance.
+ */
+export function digestSections(jobs: ReminderJob[]): DigestSection[] {
+  const byKind = new Map<JobKind, ReminderJob[]>();
+  for (const job of jobs) {
+    const bucket = byKind.get(job.kind);
+    if (bucket) bucket.push(job);
+    else byKind.set(job.kind, [job]);
+  }
+
+  const sections: DigestSection[] = [];
+  for (const kind of SECTION_ORDER) {
+    const inKind = byKind.get(kind);
+    if (!inKind) continue;
+
+    if (kind !== 'EVENT') {
+      sections.push({ kind, icon: '', label: SECTION_LABEL[kind], items: inKind.map((job) => ({ job, text: job.payload.text })) });
+      continue;
+    }
+
+    const byCategory = new Map<EventCategory, Array<{ job: ReminderJob; text: string }>>();
+    for (const job of inKind) {
+      const m = job.payload.text.match(KIND_PREFIX);
+      const category = (m && CATEGORY_BY_LABEL.get(m[1] as string)) || 'OTHER';
+      const text = m && CATEGORY_BY_LABEL.has(m[1] as string) ? job.payload.text.replace(KIND_PREFIX, '') : job.payload.text;
+      const bucket = byCategory.get(category);
+      if (bucket) bucket.push({ job, text });
+      else byCategory.set(category, [{ job, text }]);
+    }
+    for (const { category, icon } of EVENT_KIND_ORDER) {
+      const items = byCategory.get(category);
+      if (items) sections.push({ kind, icon: `${icon} `, category, label: CATEGORY_LABEL[category], items });
+    }
+  }
+  return sections;
+}
+
+function section(s: DigestSection): messagingApi.FlexBox {
   return {
     type: 'box',
     layout: 'vertical',
@@ -51,15 +124,15 @@ function section(kind: JobKind, jobs: ReminderJob[]): messagingApi.FlexBox {
     contents: [
       {
         type: 'text',
-        text: `${SECTION_LABEL[kind]} (${jobs.length})`,
+        text: `${s.icon}${s.label} (${s.items.length})`,
         size: 'xs',
         weight: 'bold',
         color: COLORS.muted,
       },
-      ...jobs.map(
-        (j): messagingApi.FlexText => ({
+      ...s.items.map(
+        (item): messagingApi.FlexText => ({
           type: 'text',
-          text: `• ${j.payload.text}`,
+          text: `• ${item.text}`,
           size: 'sm',
           color: COLORS.text,
           wrap: true,
@@ -169,18 +242,9 @@ export function buildDigest(
   const heading = morning ? 'สรุปเช้านี้' : 'สรุปเย็นนี้';
   const quiet = jobs.length === 0;
 
-  const grouped = new Map<JobKind, ReminderJob[]>();
-  for (const job of jobs) {
-    const bucket = grouped.get(job.kind);
-    if (bucket) bucket.push(job);
-    else grouped.set(job.kind, [job]);
-  }
-
   const sections = quiet
     ? quietDay(upcoming, morning)
-    : SECTION_ORDER.filter((k) => grouped.has(k)).map((k) =>
-        section(k, grouped.get(k) as ReminderJob[]),
-      );
+    : digestSections(jobs).map(section);
 
   return {
     type: 'flex',
