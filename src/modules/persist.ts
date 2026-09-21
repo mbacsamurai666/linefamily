@@ -42,6 +42,8 @@ export async function persistDraft(draft: Draft, ctx: PersistContext): Promise<P
   switch (draft.kind) {
     case 'event':
       return persistEvent(draft, ctx);
+    case 'events':
+      return persistEventBatch(draft, ctx);
     case 'expense':
       return persistExpense(draft, ctx);
     case 'shopping':
@@ -103,6 +105,33 @@ async function persistEvent(
   await generateEventJobs(ctx.prisma, event.id, ctx.now);
 
   return { summary: `บันทึกนัด "${draft.title}" แล้ว` };
+}
+
+/**
+ * A notice read off a photo, saved in one tap. Something already on the
+ * calendar under the same name and day is left alone — the same notice sent
+ * twice must not put every exam in twice.
+ */
+async function persistEventBatch(
+  draft: Extract<Draft, { kind: 'events' }>,
+  ctx: PersistContext,
+): Promise<PersistResult> {
+  let saved = 0;
+  let existing = 0;
+  for (const ev of draft.events) {
+    const twin = await ctx.prisma.event.findFirst({
+      where: { familyId: ctx.familyId, title: ev.title, startAt: ev.startAt.toJSDate() },
+      select: { id: true },
+    });
+    if (twin) {
+      existing += 1;
+      continue;
+    }
+    await persistEvent(ev, ctx);
+    saved += 1;
+  }
+  const note = existing > 0 ? ` (อีก ${existing} นัดมีอยู่แล้ว)` : '';
+  return { summary: `ลงปฏิทิน ${saved} นัดแล้ว${note}` };
 }
 
 async function persistExpense(

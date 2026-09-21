@@ -6,7 +6,7 @@ import { DOCUMENT_TYPE_LABEL } from '../../intent/documentTypes.js';
 import type { Draft } from '../../intent/types.js';
 import { formatSatang } from '../../thai/number.js';
 import { recurrenceLabel } from '../../thai/recurrence.js';
-import { formatThaiDateTime, formatThaiSpan } from '../format.js';
+import { formatThaiDate, formatThaiDateTime, formatThaiSpan } from '../format.js';
 
 /**
  * The confirm card is the safety mechanism the whole intent pipeline rests on:
@@ -32,6 +32,14 @@ function row(label: string, value: string): messagingApi.FlexBox {
   };
 }
 
+/** "19 ก.ย." / "14–22 ก.ย." / "28 ก.ย.–3 ต.ค." — narrow enough for the label column. */
+function shortSpan(start: DateTime, end: DateTime | undefined): string {
+  const dayMonth = (d: DateTime) => formatThaiDate(d).replace(/^\S+ /, '').replace(/ \d{2}$/, '');
+  if (!end || end.hasSame(start, 'day')) return dayMonth(start);
+  if (end.hasSame(start, 'month')) return `${start.day}–${dayMonth(end)}`;
+  return `${dayMonth(start)}–${dayMonth(end)}`;
+}
+
 interface CardContent {
   heading: string;
   rows: messagingApi.FlexBox[];
@@ -40,6 +48,30 @@ interface CardContent {
 
 function describe(draft: Draft, zone: string): CardContent {
   switch (draft.kind) {
+    case 'events': {
+      const kept = draft.skippedPast > 0 ? ` (ข้าม ${draft.skippedPast} รายการที่ผ่านไปแล้ว)` : '';
+      return {
+        heading: `ลงปฏิทิน ${draft.events.length} นัด`,
+        altText: `ลงปฏิทิน ${draft.events.length} นัดจากรูป`,
+        rows: [
+          ...draft.events.map((ev) =>
+            row(
+              shortSpan(ev.startAt.setZone(zone), ev.endAt?.setZone(zone)),
+              ev.allDay ? ev.title : `${ev.title} ${ev.startAt.setZone(zone).toFormat('HH:mm')}`,
+            ),
+          ),
+          ...(kept
+            ? [
+                {
+                  type: 'box' as const,
+                  layout: 'vertical' as const,
+                  contents: [{ type: 'text' as const, text: kept.trim(), size: 'xs' as const, color: COLORS.muted, wrap: true }],
+                },
+              ]
+            : []),
+        ],
+      };
+    }
     case 'event': {
       const when = formatThaiSpan(draft.startAt.setZone(zone), draft.endAt?.setZone(zone), draft.allDay);
       return {

@@ -644,3 +644,22 @@ describe('a trip across several days', () => {
     expect(whole?.reply.match(/เที่ยว จูไห/g)).toHaveLength(7);
   });
 });
+
+describe('appointments read off a photo', () => {
+  it('saves them all in one tap, and not twice when the notice is sent again', async () => {
+    const day = (iso: string) => DateTime.fromISO(iso, { zone: ZONE });
+    const draft = {
+      kind: 'events' as const,
+      skippedPast: 0,
+      events: [
+        { kind: 'event' as const, title: 'สอบปลายภาค', startAt: day('2026-09-23'), allDay: true, category: 'SCHOOL' as const },
+        { kind: 'event' as const, title: 'ปิดภาคเรียน', startAt: day('2026-10-01'), endAt: day('2026-10-25'), allDay: true, category: 'SCHOOL' as const },
+      ],
+    };
+    const persistCtx = { prisma: db.prisma, familyId, memberId, now: NOW };
+
+    expect((await persistDraft(draft, persistCtx)).summary).toBe('ลงปฏิทิน 2 นัดแล้ว');
+    expect((await persistDraft(draft, persistCtx)).summary).toBe('ลงปฏิทิน 0 นัดแล้ว (อีก 2 นัดมีอยู่แล้ว)');
+    expect(await db.prisma.event.count({ where: { familyId } })).toBe(2);
+  });
+});

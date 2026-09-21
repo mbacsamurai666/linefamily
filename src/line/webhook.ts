@@ -484,8 +484,8 @@ async function rewriteContext(prisma: PrismaClient, ctx: FamilyContext): Promise
 }
 
 /**
- * A photo in the group — checked against VisionParser as a possible receipt.
- * Silent on anything that is not one: a bot that comments on every family
+ * A photo in the group — checked against VisionParser as a possible receipt,
+ * or a notice full of dates to put on the calendar. Silent on anything else: a bot that comments on every family
  * photo is a bot that gets muted, and a slip that fails to read is far more
  * likely to be a birthday-party snapshot than a genuine OCR miss.
  */
@@ -543,7 +543,7 @@ async function handleImageMessage(
   };
 
   // LINE's Messaging API serves photo message content as JPEG.
-  const result = await deps.visionParser.parseReceipt(base64, 'image/jpeg', ctx);
+  const result = await deps.visionParser.parsePhoto(base64, 'image/jpeg', ctx);
   if (result.kind === 'unknown') return;
 
   // Remember which photo this came from, so the saved expense can point back
@@ -561,7 +561,7 @@ async function handleImageMessage(
     confidence: result.confidence,
   });
 
-  deps.log?.('draft created from receipt image', { kind: result.kind });
+  deps.log?.('draft created from photo', { kind: result.kind });
 
   await deps.api.replyMessage({
     replyToken: event.replyToken,

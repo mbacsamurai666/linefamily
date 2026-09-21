@@ -7,6 +7,7 @@ import type { DateTime } from 'luxon';
  */
 export type Draft =
   | EventDraft
+  | EventBatchDraft
   | ExpenseDraft
   | BillDraft
   | DocumentDraft
@@ -32,6 +33,14 @@ export interface EventDraft {
   attendeeName?: string;
   /** RFC 5545 RRULE body for a repeating appointment, e.g. "FREQ=WEEKLY;BYDAY=MO". */
   rrule?: string;
+}
+
+/** Several appointments read off one picture — a school notice, say. One tap saves them all. */
+export interface EventBatchDraft {
+  kind: 'events';
+  events: EventDraft[];
+  /** Items on the picture already over, left out — said on the card so nobody wonders. */
+  skippedPast: number;
 }
 
 export interface ExpenseDraft {

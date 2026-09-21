@@ -65,6 +65,7 @@ function buildVisionParser(cfg: Config, openai: OpenAI | null): VisionParser | u
   return new VisionParser({
     client: openai,
     model: cfg.OPENAI_VISION_MODEL,
+    scheduleModel: cfg.OPENAI_TEXT_MODEL,
     onError: (err) => log('vision parse failed', { err: String(err) }),
   });
 }
