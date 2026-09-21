@@ -4,6 +4,7 @@ import type { messagingApi } from '@line/bot-sdk';
 import { buildDigestQuickReply, buildUrgentQuickReply, type DigestNames } from '../line/digestActions.js';
 import { renderDigestImage, type UpcomingLine } from '../line/digestImage.js';
 import { formatThaiDate } from '../line/format.js';
+import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
 import { entryDays, listCalendar } from '../modules/calendar.js';
 import { buildDigest } from '../line/flex/digest.js';
 import type {
@@ -228,7 +229,7 @@ export class LineNotifier implements Notifier {
           days.length > 1
             ? `${short(days[0]!)} – ${short(days[days.length - 1]!)}`
             : `${short(start)}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
-        title: ev.title,
+        title: `[${CATEGORY_LABEL[ev.category as EventCategory] ?? CATEGORY_LABEL.OTHER}] ${ev.title}`,
         daysAway: Math.max(0, Math.round(start.startOf('day').diff(today, 'days').days)),
       }));
   }

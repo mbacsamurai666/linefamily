@@ -115,18 +115,34 @@ export function spanLabel(ev: { startAt: string; endAt: string | null }, timezon
 }
 
 const EVENT_CATEGORY_LABEL: Record<string, string> = {
-  MEDICAL: 'หมอ',
   SCHOOL: 'โรงเรียน',
+  TRAVEL: 'เที่ยว',
+  WORK: 'งาน',
+  MEDICAL: 'หมอ',
   GOVERNMENT: 'ราชการ',
   SOCIAL: 'สังคม',
-  WORK: 'งาน',
-  OTHER: 'อื่นๆ',
+  OTHER: 'นัด',
 };
 
-export const EVENT_CATEGORIES = ['MEDICAL', 'SCHOOL', 'GOVERNMENT', 'SOCIAL', 'WORK', 'OTHER'] as const;
+const EVENT_CATEGORY_ICON: Record<string, string> = {
+  SCHOOL: '🏫',
+  TRAVEL: '✈️',
+  WORK: '💼',
+  MEDICAL: '🏥',
+  GOVERNMENT: '🏛️',
+  SOCIAL: '🎉',
+  OTHER: '📌',
+};
+
+/** In the order the filter chips and the form's picker show them. */
+export const EVENT_CATEGORIES = ['SCHOOL', 'TRAVEL', 'WORK', 'MEDICAL', 'GOVERNMENT', 'SOCIAL', 'OTHER'] as const;
 
 export function eventCategoryLabel(category: string): string {
   return EVENT_CATEGORY_LABEL[category] ?? category;
+}
+
+export function eventCategoryIcon(category: string): string {
+  return EVENT_CATEGORY_ICON[category] ?? (EVENT_CATEGORY_ICON.OTHER as string);
 }
 
 const THAI_MONTHS_FULL = [
@@ -234,6 +250,7 @@ const EVENT_CATEGORY_COLOR: Record<string, string> = {
   GOVERNMENT: '#8a8f98',
   SOCIAL: '#e0813f',
   WORK: '#049b43',
+  TRAVEL: '#e0487f',
   OTHER: '#06c755',
 };
 

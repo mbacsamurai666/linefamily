@@ -13,6 +13,7 @@ import {
   listLoans,
 } from '../modules/loanAssetDeposit.js';
 import { persistDraft, resolveRotation } from '../modules/persist.js';
+import { guessEventCategory } from '../intent/categories.js';
 import { applyLeadTimes, familyLeadTimes, LEAD_KINDS } from '../modules/leadTimes.js';
 import { computeSetupStatus } from '../modules/setup.js';
 import {
@@ -144,7 +145,7 @@ const documentType = z.enum([
   'OTHER',
 ]);
 
-const eventCategory = z.enum(['MEDICAL', 'SCHOOL', 'GOVERNMENT', 'SOCIAL', 'WORK', 'OTHER']);
+const eventCategory = z.enum(['MEDICAL', 'SCHOOL', 'GOVERNMENT', 'SOCIAL', 'WORK', 'TRAVEL', 'OTHER']);
 
 const eventBody = z.object({
   title: z.string().min(1),
@@ -153,7 +154,8 @@ const eventBody = z.object({
   /** Last day of a span, inclusive; omitted for one day. */
   endAt: z.string().optional(),
   allDay: z.boolean().default(false),
-  category: eventCategory.default('OTHER'),
+  /** Omitted: guessed from the title, the same as a message in the group. */
+  category: eventCategory.optional(),
   location: z.string().optional(),
   note: z.string().optional(),
   attendeeName: z.string().optional(),
@@ -654,7 +656,7 @@ export function createApiRouter(deps: ApiDeps) {
         startAt,
         ...(endAt ? { endAt } : {}),
         allDay: parsed.data.allDay,
-        category: parsed.data.category,
+        category: parsed.data.category ?? guessEventCategory(parsed.data.title),
         ...(parsed.data.location !== undefined ? { location: parsed.data.location } : {}),
         ...(parsed.data.note !== undefined ? { note: parsed.data.note } : {}),
         ...(parsed.data.attendeeName !== undefined ? { attendeeName: parsed.data.attendeeName } : {}),

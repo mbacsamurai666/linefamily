@@ -943,6 +943,50 @@ select {
   box-shadow: var(--shadow-sm);
 }
 
+/* Kind filter: one chip per kind that has something this month. */
+.kind-filter {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: -4px 0 12px;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.kind-filter button {
+  flex: none;
+  border: 1px solid var(--border, #e7dde2);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.kind-filter button.active {
+  border-color: var(--chip, var(--brand-dark));
+  background: var(--chip, var(--brand-dark));
+  color: #fff;
+}
+
+.kind-filter button:focus-visible {
+  outline: 2px solid var(--brand-dark);
+  outline-offset: 2px;
+}
+
+.kind-count {
+  font-weight: 400;
+  opacity: 0.8;
+  margin-left: 2px;
+}
+
+.kind-tag {
+  font-weight: 600;
+}
+
 .week-scroll {
   overflow-x: auto;
   margin: 0 -16px 12px;

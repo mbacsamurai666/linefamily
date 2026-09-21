@@ -105,7 +105,8 @@ enum EventCategory {
   GOVERNMENT // ราชการ
   SOCIAL // สังคม
   WORK // งาน
-  OTHER // อื่นๆ
+  TRAVEL // เที่ยว
+  OTHER // นัด
 }
 
 /// A rendered digest picture, kept only so LINE has somewhere to fetch it from.

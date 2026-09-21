@@ -297,7 +297,8 @@ export const api = {
     /** Last day of a span, "YYYY-MM-DD", inclusive. */
     endAt?: string;
     allDay: boolean;
-    category: string;
+    /** Omit to let the server guess it from the title. */
+    category?: string;
     location?: string;
     note?: string;
     attendeeName?: string;

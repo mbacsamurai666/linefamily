@@ -85,6 +85,7 @@ describe('a quiet morning', () => {
       data: {
         familyId,
         title: 'พาแม่ไปหาหมอ',
+        category: 'MEDICAL',
         startAt: DateTime.fromISO('2026-09-17T15:00', { zone: ZONE }).toJSDate(),
       },
     });
@@ -95,7 +96,7 @@ describe('a quiet morning', () => {
     expect(pushed).toHaveLength(1);
     const card = pushed[0]!.messages[0] as messagingApi.FlexMessage;
     expect(card.altText).toBe('สรุปเช้านี้ — วันนี้ไม่มีอะไรต้องเตือน');
-    expect(JSON.stringify(card.contents)).toContain('พาแม่ไปหาหมอ');
+    expect(JSON.stringify(card.contents)).toContain('[หมอ] พาแม่ไปหาหมอ');
     expect(JSON.stringify(card.contents)).toContain('พฤ. 17 ก.ย. 15:00');
     // Grouped the same way as the app's หน้าหลัก.
     expect(JSON.stringify(card.contents)).toContain('ใน 3 วัน (1)');

@@ -42,6 +42,7 @@ import {
   DOCUMENT_TYPES,
   documentTypeLabel,
   eventCategoryColor,
+  eventCategoryIcon,
   eventCategoryLabel,
   kindLabel,
   minutesOfDay,
@@ -863,6 +864,8 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   // the week view its week, and the panel below its appointments.
   const [selected, setSelected] = useState<string>(initialDay ?? todayKey);
   const [calView, setCalView] = useState<'board' | 'week'>('board');
+  // One kind at a time — "what's on for school this month" — or everything.
+  const [kind, setKind] = useState<string | null>(null);
   const [monthData, setMonthData] = useState<{
     key: string;
     events: EventSummary[];
@@ -921,7 +924,13 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
     setExpandedKey(null);
   };
 
-  const dayEvents = (current?.events ?? []).filter((e) => eventDayKeys(e, timezone).includes(selected));
+  const monthEvents = current?.events ?? [];
+  const shownEvents = kind ? monthEvents.filter((e) => e.category === kind) : monthEvents;
+  const kindCounts = EVENT_CATEGORIES.map((c) => ({
+    c,
+    n: new Set(monthEvents.filter((e) => e.category === c).map((e) => `${e.id}|${e.startAt}`)).size,
+  })).filter((k) => k.n > 0);
+  const dayEvents = shownEvents.filter((e) => eventDayKeys(e, timezone).includes(selected));
   const dayReminders = reminders
     .filter((r) => dayKey(r.dueAt, timezone) === selected)
     .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
@@ -963,12 +972,31 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         </button>
       </div>
 
+      {kindCounts.length > 1 && (
+        <div className="kind-filter" role="group" aria-label="กรองตามหมวด">
+          <button className={kind === null ? 'active' : ''} aria-pressed={kind === null} onClick={() => setKind(null)}>
+            ทั้งหมด
+          </button>
+          {kindCounts.map(({ c, n }) => (
+            <button
+              key={c}
+              className={kind === c ? 'active' : ''}
+              aria-pressed={kind === c}
+              style={{ '--chip': eventCategoryColor(c) } as React.CSSProperties}
+              onClick={() => setKind(kind === c ? null : c)}
+            >
+              {eventCategoryIcon(c)} {eventCategoryLabel(c)} <span className="kind-count">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {calView === 'board' ? (
         <CalendarBoard
           monthKey={monthKey}
           todayKey={todayKey}
           selected={selected}
-          events={current?.events ?? null}
+          events={current ? shownEvents : null}
           holidays={holidays}
           timezone={timezone}
           onSelect={(key) => {
@@ -1036,6 +1064,10 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                         {ev.repeats && <span className="muted"> 🔁</span>}
                       </div>
                       <div className="muted">
+                        <span className="kind-tag" style={{ color: eventCategoryColor(ev.category) }}>
+                          {eventCategoryIcon(ev.category)} {eventCategoryLabel(ev.category)}
+                        </span>
+                        {' · '}
                         {spanLabel(ev, timezone) ?? (ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt))}
                         {ev.location ? ` · ${ev.location}` : ''}
                       </div>
@@ -1381,6 +1413,9 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [category, setCategory] = useState<(typeof EVENT_CATEGORIES)[number]>(
     (existing?.category as (typeof EVENT_CATEGORIES)[number]) ?? 'OTHER',
   );
+  // A new appointment's kind is guessed from its title, as in the chat, until
+  // someone picks one.
+  const [categoryChosen, setCategoryChosen] = useState(Boolean(existing));
   const [location, setLocation] = useState(existing?.location ?? '');
   const [attendeeName, setAttendeeName] = useState(existing?.attendeeNames[0] ?? '');
   const [note, setNote] = useState(existing?.note ?? '');
@@ -1431,7 +1466,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           startAt: allDay ? day : `${day}T${time}`,
           ...(spanEnd ? { endAt: spanEnd } : {}),
           allDay,
-          category,
+          ...(categoryChosen ? { category } : {}),
           ...(location.trim() ? { location: location.trim() } : {}),
           ...(attendeeName.trim() ? { attendeeName: attendeeName.trim() } : {}),
           ...(note.trim() ? { note: note.trim() } : {}),
@@ -1509,12 +1544,16 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           <label htmlFor="event-category">ประเภท</label>
           <select
             id="event-category"
-            value={category}
-            onChange={(e) => setCategory(e.target.value as typeof category)}
+            value={categoryChosen ? category : ''}
+            onChange={(e) => {
+              setCategory(e.target.value as typeof category);
+              setCategoryChosen(true);
+            }}
           >
+            {!categoryChosen && <option value="">เดาจากชื่อเรื่อง</option>}
             {EVENT_CATEGORIES.map((c) => (
               <option key={c} value={c}>
-                {eventCategoryLabel(c)}
+                {eventCategoryIcon(c)} {eventCategoryLabel(c)}
               </option>
             ))}
           </select>

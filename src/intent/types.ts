@@ -1,4 +1,5 @@
 import type { DateTime } from 'luxon';
+import type { EventCategory } from './categories.js';
 
 /**
  * A Draft is what a parser produces. Nothing here is persisted until the user
@@ -26,7 +27,7 @@ export interface EventDraft {
   /** Last day of a span such as "1-7 ต.ค." (inclusive); absent for one day. */
   endAt?: DateTime;
   allDay: boolean;
-  category: 'MEDICAL' | 'SCHOOL' | 'GOVERNMENT' | 'SOCIAL' | 'WORK' | 'OTHER';
+  category: EventCategory;
   location?: string;
   note?: string;
   /** Display name of who this event is about — "น้องพร สอบปลายภาค พรุ่งนี้". */

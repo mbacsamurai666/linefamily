@@ -986,6 +986,8 @@ describe('a trip across several days, from the app', () => {
     });
     expect(created.status).toBe(201);
     const event = await db.prisma.event.findFirstOrThrow({ where: { title: 'เที่ยวจูไห่' } });
+    // No kind was sent, so it is guessed from the title.
+    expect(event.category).toBe('TRAVEL');
 
     // A range that begins mid-trip still finds it.
     const res = await authed('/events?from=2026-10-04&to=2026-10-05');
