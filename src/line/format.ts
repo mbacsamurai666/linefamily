@@ -42,6 +42,21 @@ export function formatThaiSpan(start: DateTime, end: DateTime | null | undefined
   return `${first} – ${formatThaiDateTime(end, allDay)}`;
 }
 
+/** The "(พรุ่งนี้)" a reminder is worded with. */
+const RELATIVE_DAY = / \((?:วันนี้|พรุ่งนี้|มะรืนนี้|อีก \d+ วัน|เลยมา \d+ วัน)\)/;
+
+/**
+ * A reminder's "(พรุ่งนี้)" is worded for the moment it falls due, but it is
+ * read when a digest goes out — up to eleven hours earlier for the evening's,
+ * and whenever someone opens the app. Say it again for when it is read.
+ * Without `at` (reminders older than it) the word is dropped rather than
+ * risked; the date beside it still says when.
+ */
+export function rewordRelativeDay(text: string, at: DateTime | null, readAt: DateTime): string {
+  if (!RELATIVE_DAY.test(text)) return text;
+  return at ? text.replace(RELATIVE_DAY, ` (${formatRelativeDay(at, readAt)})`) : text.replace(RELATIVE_DAY, '');
+}
+
 /** "อีก 2 วัน" / "วันนี้" / "พรุ่งนี้" — the relative hint used in digests. */
 export function formatRelativeDay(target: DateTime, now: DateTime): string {
   const days = Math.round(target.startOf('day').diff(now.startOf('day'), 'days').days);

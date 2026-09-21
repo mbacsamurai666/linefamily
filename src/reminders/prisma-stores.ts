@@ -3,7 +3,7 @@ import { DateTime } from 'luxon';
 import type { messagingApi } from '@line/bot-sdk';
 import { buildDigestQuickReply, buildUrgentQuickReply, type DigestNames } from '../line/digestActions.js';
 import { renderDigestImage, type UpcomingLine } from '../line/digestImage.js';
-import { formatThaiDate } from '../line/format.js';
+import { formatThaiDate, rewordRelativeDay } from '../line/format.js';
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
 import { entryDays, listCalendar } from '../modules/calendar.js';
 import { buildDigest } from '../line/flex/digest.js';
@@ -159,9 +159,15 @@ export class LineNotifier implements Notifier {
     return family?.lineGroupId ?? null;
   }
 
-  async sendDigest(familyId: string, jobs: ReminderJob[], slot: DateTime): Promise<number> {
+  async sendDigest(familyId: string, dueJobs: ReminderJob[], slot: DateTime): Promise<number> {
     const to = await this.groupIdOf(familyId);
     if (!to) return 0;
+
+    // "(พรุ่งนี้)" as of this digest, not as of when each reminder falls due.
+    const jobs = dueJobs.map((j) => {
+      const at = typeof j.payload.at === 'string' ? DateTime.fromISO(j.payload.at, { zone: slot.zone }) : null;
+      return { ...j, payload: { ...j.payload, text: rewordRelativeDay(j.payload.text, at?.isValid ? at : null, slot) } };
+    });
 
     // A quiet day's digest has nothing due to list, so it looks a week ahead.
     const upcoming = jobs.length === 0 ? await this.weekAhead(familyId, slot) : [];

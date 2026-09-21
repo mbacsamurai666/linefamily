@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
-import { formatRelativeDay } from '../line/format.js';
+import { rewordRelativeDay } from '../line/format.js';
 
 /**
  * Read side for the Dashboard tab: upcoming items bucketed by how soon they
@@ -22,8 +22,6 @@ export interface Upcoming {
   next7d: UpcomingItem[];
 }
 
-/** The "(พรุ่งนี้)" a reminder was worded with — true on the day it goes out, not on the day it is read. */
-const RELATIVE_DAY = / \((?:วันนี้|พรุ่งนี้|มะรืนนี้|อีก \d+ วัน|เลยมา \d+ วัน)\)/;
 
 export async function computeUpcoming(
   prisma: PrismaClient,
@@ -59,7 +57,7 @@ export async function computeUpcoming(
     const text = payload.text ?? '';
     // Jobs queued before `at` existed fall back to the reminder's own time.
     const at = payload.at ? DateTime.fromISO(payload.at, { zone }) : DateTime.fromJSDate(j.dueAt, { zone });
-    const itemKey = `${j.kind}:${j.refId}:${payload.at ?? text.replace(RELATIVE_DAY, '')}`;
+    const itemKey = `${j.kind}:${j.refId}:${payload.at ?? rewordRelativeDay(text, null, local)}`;
     if (seen.has(itemKey)) continue;
     seen.add(itemKey);
     if (at < startOfToday || at > in7d) continue;
@@ -70,7 +68,7 @@ export async function computeUpcoming(
         id: j.id,
         kind: j.kind,
         dueAt: at.toUTC().toISO() ?? j.dueAt.toISOString(),
-        text: payload.at ? text.replace(RELATIVE_DAY, ` (${formatRelativeDay(at, local)})`) : text.replace(RELATIVE_DAY, ''),
+        text: rewordRelativeDay(text, payload.at ? at : null, local),
       },
     });
   }

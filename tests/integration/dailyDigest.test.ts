@@ -147,6 +147,30 @@ describe('an all-day appointment', () => {
   });
 });
 
+describe('"today" and "tomorrow"', () => {
+  it('are said as of the digest, not as of when each reminder falls due', async () => {
+    // A 02:00 appointment: its two-hour reminder falls due at midnight, so the
+    // evening before carries it — and must call it tomorrow's.
+    const event = await db.prisma.event.create({
+      data: {
+        familyId,
+        title: 'ไปส่งสนามบิน',
+        startAt: DateTime.fromISO('2026-09-16T02:00', { zone: ZONE }).toJSDate(),
+        reminderOffsets: [120],
+      },
+    });
+    await generateEventJobs(db.prisma, event.id, DateTime.fromISO('2026-09-10T12:00', { zone: ZONE }));
+    const { api: line, pushed } = fakeLine();
+
+    await engineAt(() => DateTime.fromISO('2026-09-15T20:00', { zone: ZONE }), line).tick();
+
+    const card = JSON.stringify(pushed[0]!.messages[0]);
+    expect(card).toContain('ไปส่งสนามบิน');
+    expect(card).toContain('(พรุ่งนี้)');
+    expect(card).not.toContain('(วันนี้)');
+  });
+});
+
 describe('a quiet evening', () => {
   it('says good night when the family asked for every evening', async () => {
     await db.prisma.family.update({ where: { id: familyId }, data: { digestEveryEvening: true } });
