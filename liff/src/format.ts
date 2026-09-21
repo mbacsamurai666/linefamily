@@ -85,6 +85,35 @@ export function dayKey(iso: string, timezone: string): string {
   }).format(new Date(iso));
 }
 
+/** The day after a "YYYY-MM-DD" key, as a key — calendar arithmetic only, no zone. */
+function nextKey(key: string): string {
+  const d = new Date(`${key}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Every day an appointment covers: one for most, seven for "เที่ยว 1-7 ต.ค.".
+ * An all-day span's end is its last day, inclusive.
+ */
+export function eventDayKeys(ev: { startAt: string; endAt: string | null }, timezone: string): string[] {
+  const first = dayKey(ev.startAt, timezone);
+  const last = ev.endAt ? dayKey(ev.endAt, timezone) : first;
+  const keys = [first];
+  for (let k = first; k < last && keys.length < 400; ) {
+    k = nextKey(k);
+    keys.push(k);
+  }
+  return keys;
+}
+
+/** "1–7 ต.ค." style label for a span's days, or null for a single day. */
+export function spanLabel(ev: { startAt: string; endAt: string | null }, timezone: string): string | null {
+  const keys = eventDayKeys(ev, timezone);
+  if (keys.length < 2) return null;
+  return `${thaiShortDayMonth(keys[0]!)} – ${thaiShortDayMonth(keys[keys.length - 1]!)}`;
+}
+
 const EVENT_CATEGORY_LABEL: Record<string, string> = {
   MEDICAL: 'หมอ',
   SCHOOL: 'โรงเรียน',

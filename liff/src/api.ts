@@ -294,6 +294,8 @@ export const api = {
   addEvent: (body: {
     title: string;
     startAt: string;
+    /** Last day of a span, "YYYY-MM-DD", inclusive. */
+    endAt?: string;
     allDay: boolean;
     category: string;
     location?: string;
@@ -343,6 +345,8 @@ export const api = {
     body: {
       title?: string;
       startAt?: string;
+      /** Null makes it a single day again. */
+      endAt?: string | null;
       allDay?: boolean;
       category?: string;
       location?: string | null;

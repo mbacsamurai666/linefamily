@@ -14,6 +14,12 @@ import { normalizeThaiDigits, parseThaiNumber } from './number.js';
  */
 export interface ThaiDateTimeMatch {
   start: DateTime;
+  /**
+   * The last day of a span such as "1-7 ต.ค." — the day itself for an all-day
+   * span (inclusive), the same clock time on that day otherwise. Absent for
+   * a single day.
+   */
+  end?: DateTime;
   /** True when a date was given with no time of day. */
   allDay: boolean;
   matched: string[];
@@ -192,7 +198,55 @@ function matchTime(text: string): TimeMatch | null {
 
 interface DateMatch {
   date: DateTime;
+  /** Last day of a span, inclusive. */
+  end?: DateTime;
   text: string;
+}
+
+const RANGE_SEP = '\\s*(?:-|–|—|ถึงวันที่|ถึง)\\s*';
+
+/**
+ * "1-7 ต.ค." / "1 - 7 ตุลาคม 2569" / "28 ก.ย. - 3 ต.ค." / "30 ธ.ค. ถึง 2 ม.ค."
+ * A trip or a school camp is one thing across several days, not seven
+ * appointments.
+ */
+function matchDateRange(text: string, today: DateTime): DateMatch | null {
+  const year = '(?:\\s?(\\d{2,4}))?';
+  const lead = '(?:วันที่\\s*)?';
+  // Across two months: "28 ก.ย. - 3 ต.ค."
+  const across = text.match(
+    new RegExp(`${lead}(\\d{1,2})\\s?(${MONTH_ALT})${year}${RANGE_SEP}(\\d{1,2})\\s?(${MONTH_ALT})${year}`),
+  );
+  // Within one month: "1-7 ต.ค."
+  const within = across
+    ? null
+    : text.match(new RegExp(`${lead}(\\d{1,2})${RANGE_SEP}(\\d{1,2})\\s?(${MONTH_ALT})${year}`));
+  const m = across ?? within;
+  if (!m) return null;
+
+  const [d1, m1, y1, d2, m2, y2] = across
+    ? [m[1], m[2], m[3], m[4], m[5], m[6]]
+    : [m[1], m[3], undefined, m[2], m[3], m[4]];
+  const startMonth = MONTHS[m1 as string];
+  const endMonth = MONTHS[m2 as string];
+  if (startMonth === undefined || endMonth === undefined) return null;
+
+  const explicitYear = y2 ?? y1;
+  const endYear = explicitYear ? toGregorianYear(Number(explicitYear)) : today.year;
+  let end = DateTime.fromObject({ year: endYear, month: endMonth, day: Number(d2) }, { zone: today.zone });
+  // The start sits in the end's year unless it is later in the calendar —
+  // "30 ธ.ค. - 2 ม.ค." begins the year before it ends.
+  const startYear = y1 ? toGregorianYear(Number(y1)) : endYear - (startMonth > endMonth ? 1 : 0);
+  let start = DateTime.fromObject({ year: startYear, month: startMonth, day: Number(d1) }, { zone: today.zone });
+  if (!start.isValid || !end.isValid || end < start) return null;
+  // A bare span that is already over means next year, as for a single date.
+  if (!explicitYear && end < today) {
+    start = start.plus({ years: 1 });
+    end = end.plus({ years: 1 });
+  }
+  // Longer than a couple of months is more likely a misread than a trip.
+  if (end.diff(start, 'days').days > 62) return null;
+  return { date: start, end, text: m[0] };
 }
 
 /** Next occurrence of a weekday, always strictly in the future. */
@@ -205,7 +259,10 @@ function matchDate(text: string, now: DateTime): DateMatch | null {
   const today = now.startOf('day');
 
   // Explicit calendar dates first — they are unambiguous, so nothing else
-  // should be allowed to claim their digits.
+  // should be allowed to claim their digits. A span before a single date, or
+  // "1-7 ต.ค." would be read as just the 7th.
+  const range = matchDateRange(text, today);
+  if (range) return range;
 
   // "5 กันยายน 2569" / "5 ก.ย." / "5ก.ย.69"
   const named = text.match(new RegExp(`(\\d{1,2})\\s?(${MONTH_ALT})\\s?(\\d{2,4})?`));
@@ -319,7 +376,13 @@ export function parseThaiDateTime(input: string, now: DateTime): ThaiDateTimeMat
   if (timeHit) matched.push(timeHit.text);
 
   if (!timeHit && dateHit) {
-    return { start: dateHit.date, allDay: true, matched, hasExplicitDate: true };
+    return {
+      start: dateHit.date,
+      ...(dateHit.end ? { end: dateHit.end } : {}),
+      allDay: true,
+      matched,
+      hasExplicitDate: true,
+    };
   }
 
   const time = timeHit as TimeMatch;
@@ -329,7 +392,8 @@ export function parseThaiDateTime(input: string, now: DateTime): ThaiDateTimeMat
   // A time with no date means the next time that clock reading comes around.
   if (!dateHit && start <= now) start = start.plus({ days: 1 });
 
-  return { start, allDay: false, matched, hasExplicitDate: dateHit !== null };
+  const end = dateHit?.end?.set({ hour: time.hour, minute: time.minute, second: 0, millisecond: 0 });
+  return { start, ...(end ? { end } : {}), allDay: false, matched, hasExplicitDate: dateHit !== null };
 }
 
 /**

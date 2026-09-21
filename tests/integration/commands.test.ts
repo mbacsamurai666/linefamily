@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
 import { createTestDb, type TestDb } from './harness.js';
 import { tryDirectCommand } from '../../src/modules/commands.js';
+import { RuleIntentParser } from '../../src/intent/RuleIntentParser.js';
 import { persistDraft } from '../../src/modules/persist.js';
 import { firstChoreDueAt, generateChoreJobs, generateMedicationJobs } from '../../src/reminders/generate.js';
 
@@ -614,5 +615,32 @@ describe('tryDirectCommand — ลบ<อะไร> <ชื่อ>', () => {
     expect(
       await db.prisma.notificationJob.count({ where: { kind: 'MEDICATION', status: 'PENDING' } }),
     ).toBe(0);
+  });
+});
+
+describe('a trip across several days', () => {
+  it('is saved as one appointment and listed on each of its days', async () => {
+    const parsed = await new RuleIntentParser().parse('เที่ยว จูไห 1-7 ต.ค.', {
+      familyId,
+      timezone: ZONE,
+      now: NOW,
+      memberNames: ['แม่'],
+      categoryNames: [],
+    });
+    expect(parsed.kind).toBe('event');
+    if (parsed.kind !== 'event') return;
+    await persistDraft(parsed.draft, { prisma: db.prisma, familyId, memberId, now: NOW });
+
+    const saved = await db.prisma.event.findFirstOrThrow({ where: { familyId } });
+    expect(saved.title).toBe('เที่ยว จูไห');
+    expect(DateTime.fromJSDate(saved.endAt!, { zone: ZONE }).toISODate()).toBe('2026-10-07');
+
+    // Asked about a day in the middle of it.
+    const mid = await tryDirectCommand('นัดวันที่ 4 ต.ค.', ctx());
+    expect(mid?.reply).toContain('เที่ยว จูไห (วันที่ 4/7)');
+
+    // Asked about the whole span.
+    const whole = await tryDirectCommand('นัดวันที่ 1-7 ต.ค.', ctx());
+    expect(whole?.reply.match(/เที่ยว จูไห/g)).toHaveLength(7);
   });
 });

@@ -6,7 +6,7 @@ import { DOCUMENT_TYPE_LABEL } from '../../intent/documentTypes.js';
 import type { Draft } from '../../intent/types.js';
 import { formatSatang } from '../../thai/number.js';
 import { recurrenceLabel } from '../../thai/recurrence.js';
-import { formatThaiDateTime } from '../format.js';
+import { formatThaiDateTime, formatThaiSpan } from '../format.js';
 
 /**
  * The confirm card is the safety mechanism the whole intent pipeline rests on:
@@ -41,7 +41,7 @@ interface CardContent {
 function describe(draft: Draft, zone: string): CardContent {
   switch (draft.kind) {
     case 'event': {
-      const when = formatThaiDateTime(draft.startAt.setZone(zone), draft.allDay);
+      const when = formatThaiSpan(draft.startAt.setZone(zone), draft.endAt?.setZone(zone), draft.allDay);
       return {
         heading: 'นัดหมายใหม่',
         altText: `นัดหมาย: ${draft.title} ${when}`,

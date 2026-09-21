@@ -36,7 +36,7 @@ import {
 } from '../reminders/generate.js';
 import { parseThaiDateTime } from '../thai/date.js';
 import { expandOccurrences } from '../reminders/occurrences.js';
-import { listCalendar } from './calendar.js';
+import { entryDays, listCalendar } from './calendar.js';
 import { ASSET_CATEGORY_LABEL } from '../intent/assetTypes.js';
 import { formatThaiDate, formatThaiTime } from '../line/format.js';
 import { parseAmountToSatang, formatSatang, normalizeThaiDigits } from '../thai/number.js';
@@ -249,6 +249,11 @@ async function handleAgendaDay(ctx: CommandContext, rest: string): Promise<Comma
   if (leftover.trim().length > 0) return null;
 
   const day = when.start.setZone(ctx.now.zone).startOf('day');
+  // "นัดวันที่ 1-7 ต.ค." asks about the whole span.
+  if (when.end) {
+    const last = when.end.setZone(ctx.now.zone).endOf('day');
+    return agendaReply(ctx, day, last, `วันที่ ${day.day}–${last.day}`);
+  }
   return agendaReply(ctx, day, day.endOf('day'), `วันที่ ${day.day}`);
 }
 
@@ -273,9 +278,14 @@ async function agendaReply(
   for (const h of holidays) lineFor(h.date).push(`🎌 ${h.name}`);
   for (const ev of items) {
     const start = DateTime.fromISO(ev.startAt, { zone });
-    const time = ev.allDay ? 'ทั้งวัน' : start.toFormat('HH:mm');
     const where = ev.location ? ` @ ${ev.location}` : '';
-    lineFor(start.toFormat('yyyy-MM-dd')).push(`• ${time} ${ev.title}${where}${ev.repeats ? ' 🔁' : ''}`);
+    const all = entryDays(ev, zone);
+    // A trip is listed on each of its days, saying which day of it this is.
+    for (const day of entryDays(ev, zone, from, to)) {
+      const nth = all.length > 1 ? ` (วันที่ ${all.findIndex((d) => d.equals(day)) + 1}/${all.length})` : '';
+      const time = ev.allDay || !day.hasSame(start, 'day') ? 'ทั้งวัน' : start.toFormat('HH:mm');
+      lineFor(day.toFormat('yyyy-MM-dd')).push(`• ${time} ${ev.title}${nth}${where}${ev.repeats ? ' 🔁' : ''}`);
+    }
   }
 
   const range = from.hasSame(to, 'day')

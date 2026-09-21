@@ -22,6 +22,8 @@ export interface EventDraft {
   kind: 'event';
   title: string;
   startAt: DateTime;
+  /** Last day of a span such as "1-7 ต.ค." (inclusive); absent for one day. */
+  endAt?: DateTime;
   allDay: boolean;
   category: 'MEDICAL' | 'SCHOOL' | 'GOVERNMENT' | 'SOCIAL' | 'WORK' | 'OTHER';
   location?: string;

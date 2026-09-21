@@ -150,6 +150,8 @@ const eventBody = z.object({
   title: z.string().min(1),
   /** ISO date/time string, local to the family's timezone. */
   startAt: z.string(),
+  /** Last day of a span, inclusive; omitted for one day. */
+  endAt: z.string().optional(),
   allDay: z.boolean().default(false),
   category: eventCategory.default('OTHER'),
   location: z.string().optional(),
@@ -214,6 +216,19 @@ const depositBody = z.object({
 
 const depositAdjustBody = z.object({ amountBaht: z.number() });
 
+/**
+ * An event's last day, from the app. Empty, or the same day as the start,
+ * means a single day; before the start is refused.
+ */
+function parseEnd(raw: string | undefined, start: DateTime | null, zone: string): DateTime | null | 'invalid' {
+  if (!raw) return null;
+  const end = DateTime.fromISO(raw, { zone });
+  if (!end.isValid) return 'invalid';
+  if (start && end < start.startOf('day')) return 'invalid';
+  if (start && end.hasSame(start, 'day')) return null;
+  return end;
+}
+
 /** "07:00" — digest times are chosen on the half hour in the app. */
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):(00|15|30|45)$/);
 const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
@@ -253,6 +268,8 @@ const emergencyBody = z.object({
 const eventPatchBody = z.object({
   title: z.string().min(1).optional(),
   startAt: z.string().optional(),
+  /** Null makes it a single day again. */
+  endAt: z.string().nullable().optional(),
   allDay: z.boolean().optional(),
   category: eventCategory.optional(),
   location: z.string().nullable().optional(),
@@ -626,6 +643,8 @@ export function createApiRouter(deps: ApiDeps) {
 
     const startAt = DateTime.fromISO(parsed.data.startAt, { zone: member.timezone });
     if (!startAt.isValid) return c.json({ error: 'invalid startAt' }, 400);
+    const endAt = parseEnd(parsed.data.endAt, startAt, member.timezone);
+    if (endAt === 'invalid') return c.json({ error: 'วันสิ้นสุดต้องไม่ก่อนวันเริ่ม' }, 400);
 
     const now = DateTime.now().setZone(member.timezone);
     const result = await persistDraft(
@@ -633,6 +652,7 @@ export function createApiRouter(deps: ApiDeps) {
         kind: 'event',
         title: parsed.data.title,
         startAt,
+        ...(endAt ? { endAt } : {}),
         allDay: parsed.data.allDay,
         category: parsed.data.category,
         ...(parsed.data.location !== undefined ? { location: parsed.data.location } : {}),
@@ -905,16 +925,23 @@ export function createApiRouter(deps: ApiDeps) {
     const parsed = eventPatchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-    const { startAt, ...rest } = parsed.data;
+    const { startAt, endAt, ...rest } = parsed.data;
     let startAtDt: DateTime | undefined;
     if (startAt !== undefined) {
       startAtDt = DateTime.fromISO(startAt, { zone: member.timezone });
       if (!startAtDt.isValid) return c.json({ error: 'invalid startAt' }, 400);
     }
+    let endAtDt: DateTime | null | undefined;
+    if (endAt !== undefined) {
+      const parsedEnd = endAt === null ? null : parseEnd(endAt, startAtDt ?? null, member.timezone);
+      if (parsedEnd === 'invalid') return c.json({ error: 'วันสิ้นสุดต้องไม่ก่อนวันเริ่ม' }, 400);
+      endAtDt = parsedEnd;
+    }
 
     const ok = await updateEvent(recordCtx(member), c.req.param('id'), {
       ...definedOnly(rest),
       ...(startAtDt !== undefined ? { startAt: startAtDt } : {}),
+      ...(endAtDt !== undefined ? { endAt: endAtDt } : {}),
     });
     return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
   });
@@ -941,7 +968,8 @@ export function createApiRouter(deps: ApiDeps) {
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-    const { occurrence: occurrenceIso, startAt, ...rest } = parsed.data;
+    // One date of a repeating appointment keeps the series' length.
+    const { occurrence: occurrenceIso, startAt, endAt: _seriesLength, ...rest } = parsed.data;
     const occurrence = DateTime.fromISO(occurrenceIso, { zone: member.timezone });
     if (!occurrence.isValid) return c.json({ error: 'invalid occurrence' }, 400);
     let startAtDt: DateTime | undefined;

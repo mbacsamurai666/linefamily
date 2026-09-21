@@ -977,3 +977,28 @@ describe('LIFF-created data is indistinguishable from chat-created data', () => 
     expect(await db.prisma.transaction.count({ where: { familyId } })).toBe(2);
   });
 });
+
+describe('a trip across several days, from the app', () => {
+  it('saves its last day, lists it while it is under way, and can be made one day again', async () => {
+    const created = await authed('/events', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'เที่ยวจูไห่', startAt: '2026-10-01', endAt: '2026-10-07', allDay: true }),
+    });
+    expect(created.status).toBe(201);
+    const event = await db.prisma.event.findFirstOrThrow({ where: { title: 'เที่ยวจูไห่' } });
+
+    // A range that begins mid-trip still finds it.
+    const res = await authed('/events?from=2026-10-04&to=2026-10-05');
+    const body = (await res.json()) as { items: Array<{ title: string; endAt: string | null }> };
+    expect(body.items.map((i) => i.title)).toEqual(['เที่ยวจูไห่']);
+
+    const backwards = await authed(`/events/${event.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ startAt: '2026-10-05', endAt: '2026-10-01' }),
+    });
+    expect(backwards.status).toBe(400);
+
+    await authed(`/events/${event.id}`, { method: 'PATCH', body: JSON.stringify({ endAt: null }) });
+    expect((await db.prisma.event.findUniqueOrThrow({ where: { id: event.id } })).endAt).toBeNull();
+  });
+});

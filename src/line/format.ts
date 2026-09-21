@@ -32,6 +32,16 @@ export function formatThaiDateTime(dt: DateTime, allDay: boolean): string {
   return allDay ? formatThaiDate(dt) : `${formatThaiDate(dt)} ${formatThaiTime(dt)}`;
 }
 
+/**
+ * An appointment's when, spans included: "พฤ. 1 ต.ค. 69 – พ. 7 ต.ค. 69".
+ * An all-day span's end is its last day, inclusive.
+ */
+export function formatThaiSpan(start: DateTime, end: DateTime | null | undefined, allDay: boolean): string {
+  const first = formatThaiDateTime(start, allDay);
+  if (!end || end.hasSame(start, 'day')) return first;
+  return `${first} – ${formatThaiDateTime(end, allDay)}`;
+}
+
 /** "อีก 2 วัน" / "วันนี้" / "พรุ่งนี้" — the relative hint used in digests. */
 export function formatRelativeDay(target: DateTime, now: DateTime): string {
   const days = Math.round(target.startOf('day').diff(now.startOf('day'), 'days').days);

@@ -89,3 +89,45 @@ describe('toGregorianYear', () => {
     expect(toGregorianYear(input)).toBe(expected);
   });
 });
+
+/** "เที่ยวจูไห่ 1-7 ต.ค." is one trip across seven days, not the 7th alone. */
+describe('date spans', () => {
+  const at = DateTime.fromISO('2026-09-21T10:00', { zone: 'Asia/Bangkok' });
+  const span = (input: string) => {
+    const hit = parseThaiDateTime(input, at);
+    return hit && {
+      start: hit.start.toFormat("yyyy-MM-dd'T'HH:mm"),
+      end: hit.end?.toFormat("yyyy-MM-dd'T'HH:mm") ?? null,
+      allDay: hit.allDay,
+      title: stripMatched(input, hit.matched),
+    };
+  };
+
+  it.each([
+    ['เที่ยว จูไห 1-7 ต.ค.', '2026-10-01T00:00', '2026-10-07T00:00', 'เที่ยว จูไห'],
+    ['เที่ยว จูไห 1 - 7 ตุลาคม 2569', '2026-10-01T00:00', '2026-10-07T00:00', 'เที่ยว จูไห'],
+    ['ไปเที่ยว วันที่ 10-12 ต.ค.', '2026-10-10T00:00', '2026-10-12T00:00', 'ไปเที่ยว'],
+    ['ค่ายลูก 28 ก.ย. - 3 ต.ค.', '2026-09-28T00:00', '2026-10-03T00:00', 'ค่ายลูก'],
+    ['ปีใหม่ 30 ธ.ค. ถึง 2 ม.ค.', '2026-12-30T00:00', '2027-01-02T00:00', 'ปีใหม่'],
+    ['ทริป 1-5 ก.ย.', '2027-09-01T00:00', '2027-09-05T00:00', 'ทริป'],
+  ])('%s', (input, start, end, title) => {
+    expect(span(input)).toEqual({ start, end, allDay: true, title });
+  });
+
+  it('keeps a time on the first day of a timed span', () => {
+    expect(span('ประชุม 1-3 ต.ค. 09:00')).toEqual({
+      start: '2026-10-01T09:00',
+      end: '2026-10-03T09:00',
+      allDay: false,
+      title: 'ประชุม',
+    });
+  });
+
+  it('leaves a single date alone', () => {
+    expect(span('หาหมอ 5 ต.ค. 14:00')?.end).toBeNull();
+  });
+
+  it('refuses a span that ends before it starts', () => {
+    expect(span('ทริป 7-1 ต.ค.')?.end ?? null).toBeNull();
+  });
+});

@@ -37,6 +37,8 @@ import {
   cadenceLabel,
   clockHHmm,
   dayKey,
+  eventDayKeys,
+  spanLabel,
   DOCUMENT_TYPES,
   documentTypeLabel,
   eventCategoryColor,
@@ -623,10 +625,12 @@ function CalendarBoard({
   const byDay = useMemo(() => {
     const map = new Map<string, EventSummary[]>();
     for (const ev of events ?? []) {
-      const key = dayKey(ev.startAt, timezone);
-      const bucket = map.get(key);
-      if (bucket) bucket.push(ev);
-      else map.set(key, [ev]);
+      // A trip shows on each of its days.
+      for (const key of eventDayKeys(ev, timezone)) {
+        const bucket = map.get(key);
+        if (bucket) bucket.push(ev);
+        else map.set(key, [ev]);
+      }
     }
     // All-day first, then by time — the order someone would write them in.
     for (const bucket of map.values()) {
@@ -749,7 +753,7 @@ function CalendarBoard({
 }
 
 /** The labelled facts of one appointment, shared by the board and the week view. */
-function EventDetailRows({ detail }: { detail: EventDetail }) {
+function EventDetailRows({ detail, timezone }: { detail: EventDetail; timezone: string }) {
   return (
     <>
       <div className="agenda-detail-row">
@@ -757,8 +761,10 @@ function EventDetailRows({ detail }: { detail: EventDetail }) {
         <span>{eventCategoryLabel(detail.category)}</span>
       </div>
       <div className="agenda-detail-row">
-        <span className="muted">เวลา</span>
-        <span>{detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt)}</span>
+        <span className="muted">{detail.endAt && spanLabel(detail, timezone) ? 'ช่วง' : 'เวลา'}</span>
+        <span>
+          {spanLabel(detail, timezone) ?? (detail.allDay ? 'ทั้งวัน' : thaiTimeOnly(detail.startAt))}
+        </span>
       </div>
       {detail.rrule && (
         <div className="agenda-detail-row">
@@ -915,7 +921,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
     setExpandedKey(null);
   };
 
-  const dayEvents = (current?.events ?? []).filter((e) => dayKey(e.startAt, timezone) === selected);
+  const dayEvents = (current?.events ?? []).filter((e) => eventDayKeys(e, timezone).includes(selected));
   const dayReminders = reminders
     .filter((r) => dayKey(r.dueAt, timezone) === selected)
     .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
@@ -1030,7 +1036,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                         {ev.repeats && <span className="muted"> 🔁</span>}
                       </div>
                       <div className="muted">
-                        {ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt)}
+                        {spanLabel(ev, timezone) ?? (ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt))}
                         {ev.location ? ` · ${ev.location}` : ''}
                       </div>
                     </div>
@@ -1045,7 +1051,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                         <p className="loading">กำลังโหลด...</p>
                       ) : (
                         <>
-                          <EventDetailRows detail={detail} />
+                          <EventDetailRows detail={detail} timezone={timezone} />
                           <EventActions
                             ev={ev}
                             timezone={timezone}
@@ -1141,10 +1147,12 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
   const byDay = useMemo(() => {
     const map = new Map<string, EventSummary[]>();
     for (const ev of events ?? []) {
-      const key = dayKey(ev.startAt, timezone);
-      const bucket = map.get(key);
-      if (bucket) bucket.push(ev);
-      else map.set(key, [ev]);
+      // An all-day trip fills its every day; a timed block is drawn where it starts.
+      for (const key of ev.allDay ? eventDayKeys(ev, timezone) : [dayKey(ev.startAt, timezone)]) {
+        const bucket = map.get(key);
+        if (bucket) bucket.push(ev);
+        else map.set(key, [ev]);
+      }
     }
     return map;
   }, [events, timezone]);
@@ -1302,7 +1310,7 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
             <p className="loading">กำลังโหลด...</p>
           ) : (
             <>
-              <EventDetailRows detail={detail} />
+              <EventDetailRows detail={detail} timezone={timezone} />
               {editing ? (
                 <AddEventForm
                   selectedDay={dayKey(selectedEvent.startAt, timezone)}
@@ -1363,6 +1371,10 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [title, setTitle] = useState(existing?.title ?? '');
   const [allDay, setAllDay] = useState(existing?.allDay ?? false);
   const [day, setDay] = useState(shownStart ? dayKey(shownStart, timezone) : selectedDay);
+  // The last day of a trip; blank (or the same day) is a single day.
+  const [endDay, setEndDay] = useState(
+    !occurrence && existing?.endAt && existing.allDay ? dayKey(existing.endAt, timezone) : '',
+  );
   const [time, setTime] = useState(
     shownStart && !existing?.allDay ? clockHHmm(shownStart, timezone) : '09:00',
   );
@@ -1376,9 +1388,17 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Spans are all-day, one-off appointments: "เที่ยวจูไห่ 1-7 ต.ค.".
+  const canSpan = allDay && !occurrence && !rrule;
+  const spanEnd = canSpan && endDay > day ? endDay : null;
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !day) return;
+    if (canSpan && endDay && endDay < day) {
+      setError('วันสุดท้ายต้องไม่ก่อนวันเริ่ม');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -1403,11 +1423,13 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           attendeeName: attendeeName.trim() || null,
           note: note.trim() || null,
           rrule: rrule || null,
+          endAt: spanEnd,
         });
       } else {
         await api.addEvent({
           title: title.trim(),
           startAt: allDay ? day : `${day}T${time}`,
+          ...(spanEnd ? { endAt: spanEnd } : {}),
           allDay,
           category,
           ...(location.trim() ? { location: location.trim() } : {}),
@@ -1453,7 +1475,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
 
       <div className="field-row">
         <div className="field">
-          <label htmlFor="event-day">วันที่</label>
+          <label htmlFor="event-day">{canSpan ? 'ตั้งแต่วันที่' : 'วันที่'}</label>
           <input
             id="event-day"
             type="date"
@@ -1462,6 +1484,18 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
             required
           />
         </div>
+        {canSpan && (
+          <div className="field">
+            <label htmlFor="event-end-day">ถึงวันที่ (ถ้าหลายวัน)</label>
+            <input
+              id="event-end-day"
+              type="date"
+              value={endDay}
+              min={day}
+              onChange={(e) => setEndDay(e.target.value)}
+            />
+          </div>
+        )}
         {!allDay && (
           <div className="field">
             <label htmlFor="event-time">เวลา</label>

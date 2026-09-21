@@ -32,6 +32,24 @@ export interface CalendarEntry {
   repeats: boolean;
 }
 
+/**
+ * Every local day an entry covers — one for most, several for "1-7 ต.ค." —
+ * as its start of day. Clipped to [from, to] when given.
+ */
+export function entryDays(entry: CalendarEntry, zone: string, from?: DateTime, to?: DateTime): DateTime[] {
+  const first = DateTime.fromISO(entry.startAt, { zone }).startOf('day');
+  let last = entry.endAt ? DateTime.fromISO(entry.endAt, { zone }).startOf('day') : first;
+  // A timed appointment ending exactly at midnight does not take up the next day.
+  if (!entry.allDay && entry.endAt && DateTime.fromISO(entry.endAt, { zone }).equals(last) && last > first) {
+    last = last.minus({ days: 1 });
+  }
+  const lo = from ? DateTime.max(first, from.setZone(zone).startOf('day')) : first;
+  const hi = to ? DateTime.min(last, to.setZone(zone).startOf('day')) : last;
+  const days: DateTime[] = [];
+  for (let d = lo; d <= hi && days.length < 400; d = d.plus({ days: 1 })) days.push(d);
+  return days;
+}
+
 export interface CalendarHoliday {
   /** "yyyy-MM-dd" in the family's zone. */
   date: string;
@@ -50,6 +68,8 @@ export async function listCalendar(
       familyId,
       OR: [
         { startAt: { gte: from.toJSDate(), lte: to.toJSDate() } },
+        // A trip that began before the range and is still going.
+        { rrule: null, startAt: { lt: from.toJSDate() }, endAt: { gte: from.toJSDate() } },
         // A repeating appointment first entered months ago still lands here.
         { rrule: { not: null }, startAt: { lt: from.toJSDate() } },
       ],
@@ -92,7 +112,8 @@ export async function listCalendar(
     }
 
     for (const start of starts) {
-      if (start < from || start > to) continue;
+      const last = durationMs === null ? start : start.plus({ milliseconds: durationMs });
+      if (last < from.setZone(zone).startOf('day') || start > to) continue;
       items.push({
         ...base,
         startAt: start.toUTC().toISO() ?? '',

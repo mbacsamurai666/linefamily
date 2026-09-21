@@ -69,6 +69,8 @@ async function refreshMoneySideEffects(
 export interface EventPatch {
   title?: string;
   startAt?: DateTime;
+  /** Null makes it a single day again. */
+  endAt?: DateTime | null;
   allDay?: boolean;
   category?: EventCategory;
   location?: string | null;
@@ -86,7 +88,7 @@ export async function updateEvent(
 ): Promise<boolean> {
   const existing = await ctx.prisma.event.findFirst({
     where: { id, familyId: ctx.familyId },
-    select: { id: true, startAt: true, exdates: true },
+    select: { id: true, startAt: true, endAt: true, exdates: true },
   });
   if (!existing) return false;
 
@@ -100,6 +102,12 @@ export async function updateEvent(
     data: {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.startAt !== undefined ? { startAt: patch.startAt.toJSDate() } : {}),
+      // A trip moved a week later ends a week later, unless the edit says otherwise.
+      ...(patch.endAt !== undefined
+        ? { endAt: patch.endAt ? patch.endAt.toJSDate() : null }
+        : shiftMs !== 0 && existing.endAt
+          ? { endAt: new Date(existing.endAt.getTime() + shiftMs) }
+          : {}),
       ...(shiftMs !== 0 && existing.exdates.length > 0
         ? { exdates: existing.exdates.map((d) => new Date(d.getTime() + shiftMs)) }
         : {}),

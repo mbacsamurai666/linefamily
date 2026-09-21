@@ -4,7 +4,7 @@ import type { messagingApi } from '@line/bot-sdk';
 import { buildDigestQuickReply, buildUrgentQuickReply, type DigestNames } from '../line/digestActions.js';
 import { renderDigestImage, type UpcomingLine } from '../line/digestImage.js';
 import { formatThaiDate } from '../line/format.js';
-import { listCalendar } from '../modules/calendar.js';
+import { entryDays, listCalendar } from '../modules/calendar.js';
 import { buildDigest } from '../line/flex/digest.js';
 import type {
   BudgetStore,
@@ -216,16 +216,20 @@ export class LineNotifier implements Notifier {
       slot.plus({ days: 7 }).endOf('day'),
       zone,
     );
+    const today = slot.startOf('day');
+    const short = (d: DateTime) => formatThaiDate(d).replace(/ \d{2}$/, ''); // "พ. 16 ก.ย."
     return items
-      .map((ev) => ({ ev, start: DateTime.fromISO(ev.startAt, { zone }) }))
+      .map((ev) => ({ ev, start: DateTime.fromISO(ev.startAt, { zone }), days: entryDays(ev, zone) }))
       // An all-day appointment today starts at midnight, before any digest —
-      // but it is still today's, and the most useful line on the card.
-      .filter(({ ev, start }) => start >= slot || (ev.allDay && start.hasSame(slot, 'day')))
-      .map(({ ev, start }) => ({
-        // "พ. 16 ก.ย." — the two-digit year adds nothing a week out.
-        when: `${formatThaiDate(start).replace(/ \d{2}$/, '')}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
+      // but it is still today's, and so is day three of a seven-day trip.
+      .filter(({ ev, start, days }) => start >= slot || ((ev.allDay || days.length > 1) && days.some((d) => d.equals(today))))
+      .map(({ ev, start, days }) => ({
+        when:
+          days.length > 1
+            ? `${short(days[0]!)} – ${short(days[days.length - 1]!)}`
+            : `${short(start)}${ev.allDay ? '' : ` ${start.toFormat('HH:mm')}`}`,
         title: ev.title,
-        daysAway: Math.round(start.startOf('day').diff(slot.startOf('day'), 'days').days),
+        daysAway: Math.max(0, Math.round(start.startOf('day').diff(today, 'days').days)),
       }));
   }
 

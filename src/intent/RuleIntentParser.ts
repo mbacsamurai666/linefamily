@@ -505,6 +505,7 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
       kind: 'event',
       title,
       startAt: when.start,
+      ...(when.end ? { endAt: when.end } : {}),
       allDay: when.allDay,
       category,
       ...(attendee ? { attendeeName: attendee.name } : {}),

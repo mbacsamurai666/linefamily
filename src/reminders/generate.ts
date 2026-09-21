@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
-import { formatRelativeDay, formatThaiDateTime } from '../line/format.js';
+import { formatRelativeDay, formatThaiDateTime, formatThaiSpan } from '../line/format.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import { formatSatang } from '../thai/number.js';
 import { recurrenceLabel } from '../thai/recurrence.js';
@@ -131,7 +131,11 @@ export async function generateEventJobs(
         at: startAt.toJSDate(),
         text: [
           `[${label}] ${event.title}`,
-          formatThaiDateTime(startAt, event.allDay),
+          formatThaiSpan(
+            startAt,
+            event.endAt ? startAt.plus({ milliseconds: event.endAt.getTime() - event.startAt.getTime() }) : null,
+            event.allDay,
+          ),
           `(${formatRelativeDay(startAt, dueAt)})`,
           who ? `— ${who}` : '',
           event.location ? `@ ${event.location}` : '',
