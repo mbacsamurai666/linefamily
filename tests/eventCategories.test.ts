@@ -36,3 +36,12 @@ describe('guessEventCategory', () => {
     expect(CATEGORY_LABEL.TRAVEL).toBe('เที่ยว');
   });
 });
+
+describe('words that only look medical', () => {
+  it.each([['ซื้อยางลบ'], ['ไปหายาย'], ['ซื้อหมอนใหม่'], ['ผมยาว ไปตัดผม']])('%s', (title) => {
+    expect(guessEventCategory(title)).not.toBe('MEDICAL');
+  });
+  it.each([['ไปรับยา'], ['กินยาก่อนนอน'], ['ไปหาหมอฟัน']])('%s is still medical', (title) => {
+    expect(guessEventCategory(title)).toBe('MEDICAL');
+  });
+});

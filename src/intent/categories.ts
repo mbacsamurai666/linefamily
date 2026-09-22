@@ -14,7 +14,9 @@ export type EventCategory =
  * common taps, not to be exhaustive.
  */
 const HINTS: Array<[EventCategory, RegExp]> = [
-  ['MEDICAL', /หมอ|แพทย์|คลินิก|โรงพยาบาล|รพ\.|ทันตะ|ฟัน|ตรวจสุขภาพ|ฉีดวัคซีน|วัคซีน|ผ่าตัด|ยา/],
+  // "ยา" and "หมอ" only as words: "ยางลบ" on a school supplies list made an
+  // exam a doctor's visit, and ยาย, ยาว, หมอน would have done the same.
+  ['MEDICAL', /หมอ(?!น)|แพทย์|คลินิก|โรงพยาบาล|รพ\.|ทันตะ|ฟัน|ตรวจสุขภาพ|ฉีดวัคซีน|วัคซีน|ผ่าตัด|(?:กิน|รับ|ซื้อ|ร้าน)ยา(?![งยวมน])|ยา(?![งยวกมน])/],
   // A school notice's own words: "ปิดภาคเรียน", "เก็บคะแนน", "กิจกรรมลูกเสือ".
   [
     'SCHOOL',
@@ -29,6 +31,18 @@ const HINTS: Array<[EventCategory, RegExp]> = [
   ['WORK', /ประชุม|meeting|สัมภาษณ์|งานบริษัท|ลูกค้า|ส่งงาน|เดดไลน์|deadline/i],
   ['SOCIAL', /งานแต่ง|งานบวช|งานศพ|ขึ้นบ้านใหม่|วันเกิด|เลี้ยง|กินข้าว|ปาร์ตี้|สังสรรค์|ทำบุญ|เยี่ยม/],
 ];
+
+/**
+ * A kind named outright — "โรงเรียน" on a line of its own at the end of a
+ * message, or "#เที่ยว" — beats any guess.
+ */
+export function namedEventCategory(word: string): EventCategory | null {
+  const w = word.trim().replace(/^[#\[(]|[\])]$/g, '').replace(/^(?:หมวด|ประเภท)\s*/, '');
+  for (const [category, label] of Object.entries(CATEGORY_LABEL) as Array<[EventCategory, string]>) {
+    if (w === label) return category;
+  }
+  return w === 'อื่นๆ' ? 'OTHER' : null;
+}
 
 export function guessEventCategory(title: string): EventCategory {
   for (const [category, re] of HINTS) {

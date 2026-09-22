@@ -3,7 +3,7 @@ import { normalizeThaiDigits, parseAmountToSatang } from '../thai/number.js';
 import { matchRecurrence } from '../thai/recurrence.js';
 import { guessAssetCategory } from './assetTypes.js';
 import type { EventCategory } from './categories.js';
-import { guessEventCategory } from './categories.js';
+import { guessEventCategory, namedEventCategory } from './categories.js';
 import { guessDocumentType } from './documentTypes.js';
 import type { FamilyContext, IntentParser, ParseResult } from './types.js';
 
@@ -451,9 +451,35 @@ function extractAttendee(
 
 const CALLS_OFF = /^(?:งด|ยกเลิก|เลื่อน|ข้าม|ไม่ไป|ไม่ต้องไป|ไม่มี)/;
 
-function matchEvent(text: string, ctx: FamilyContext): ParseResult {
-  const when = parseThaiDateTime(text, ctx.now);
+/**
+ * A message of several lines — "พรุ่งนี้ สอบ" and then the list of things to
+ * bring — names the appointment on its first line; the rest is its note. A
+ * line that is only a kind ("โรงเรียน") says which kind it is.
+ */
+function splitMessage(text: string): { head: string; noteLines: string[]; named: EventCategory | null } {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let named: EventCategory | null = null;
+  const kept = lines.filter((line) => {
+    const kind = lines.length > 1 ? namedEventCategory(line) : null;
+    if (kind && !named) named = kind;
+    return !kind;
+  });
+  const [head = '', ...noteLines] = kept;
+  return { head, noteLines, named };
+}
+
+function matchEvent(fullText: string, ctx: FamilyContext): ParseResult {
+  const { head, noteLines, named } = splitMessage(fullText);
+  // The date may sit on any line, but only the first names the appointment.
+  const when = parseThaiDateTime(head, ctx.now) ?? parseThaiDateTime(fullText, ctx.now);
   if (!when) return { kind: 'unknown' };
+  // "พรุ่งนี้" alone on the first line: the name is on the next one.
+  const dateOnly = stripMatched(head, when.matched).length < 2 && noteLines.length > 0;
+  const text = dateOnly ? `${head} ${noteLines[0]}` : head;
+  const note = (dateOnly ? noteLines.slice(1) : noteLines)
+    .map((l) => stripMatched(l, when.matched))
+    .filter(Boolean)
+    .join('\n');
 
   const attendee = extractAttendee(text, ctx.memberNames);
   const repeat = matchRecurrence(text);
@@ -470,7 +496,8 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
   const unhad = stripped.replace(/^มี(?=นัด)/, '');
   const title = unhad === 'นัด' ? 'นัดหมาย' : unhad;
 
-  const category: EventCategory = guessEventCategory(title);
+  const guessed = guessEventCategory(title);
+  const category: EventCategory = named ?? (guessed !== 'OTHER' ? guessed : guessEventCategory(note));
 
   // A bare time with no date word actually matching is genuinely ambiguous
   // about which day is meant — including the case where a date word was
@@ -510,6 +537,7 @@ function matchEvent(text: string, ctx: FamilyContext): ParseResult {
       category,
       ...(attendee ? { attendeeName: attendee.name } : {}),
       ...(repeat ? { rrule: repeat.rrule } : {}),
+      ...(note ? { note } : {}),
     },
   };
 }

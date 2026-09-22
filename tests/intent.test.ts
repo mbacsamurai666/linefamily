@@ -506,3 +506,42 @@ describe('AI disabled', () => {
     }
   });
 });
+
+/** The message a parent sent from the school's LINE, pasted as it came. */
+describe('a message of several lines', () => {
+  const rule = new RuleIntentParser();
+  const message = [
+    'พรุ่งนี้ สอบ นักเรียนเตรียมอุปกรณ์',
+    'ดินสอ',
+    'ยางลบ',
+    'ไม้บรรทัด',
+    'สีไม้',
+    'มาให้พร้อมนะคะ',
+    '',
+    'โรงเรียน',
+  ].join('\n');
+
+  it('names the appointment by its first line, keeps the rest as its note, and takes the kind it was given', async () => {
+    const result = await rule.parse(message, ctx);
+    expect(result.kind).toBe('event');
+    if (result.kind !== 'event' || result.draft.kind !== 'event') return;
+    expect(result.draft.title).toBe('สอบ นักเรียนเตรียมอุปกรณ์');
+    expect(result.draft.note).toBe('ดินสอ\nยางลบ\nไม้บรรทัด\nสีไม้\nมาให้พร้อมนะคะ');
+    expect(result.draft.category).toBe('SCHOOL');
+    expect(result.draft.startAt.toISODate()).toBe(ctx.now.plus({ days: 1 }).toISODate());
+  });
+
+  it('is not a doctor visit because a line says ยางลบ', async () => {
+    const result = await rule.parse(message.replace('\n\nโรงเรียน', ''), ctx);
+    if (result.kind !== 'event' || result.draft.kind !== 'event') throw new Error('expected an event');
+    expect(result.draft.category).toBe('SCHOOL');
+  });
+
+  it('finds the name on the next line when the first is only the date', async () => {
+    const result = await rule.parse('พรุ่งนี้\nไปรับยายที่สถานี\nเอาร่มไปด้วย', ctx);
+    if (result.kind !== 'event' || result.draft.kind !== 'event') throw new Error('expected an event');
+    expect(result.draft.title).toBe('ไปรับยายที่สถานี');
+    expect(result.draft.note).toBe('เอาร่มไปด้วย');
+    expect(result.draft.category).toBe('OTHER'); // ยาย is not ยา
+  });
+});

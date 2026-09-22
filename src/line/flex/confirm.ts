@@ -84,6 +84,7 @@ function describe(draft: Draft, zone: string): CardContent {
           row('ประเภท', CATEGORY_LABEL[draft.category]),
           ...(draft.attendeeName ? [row('สำหรับ', draft.attendeeName)] : []),
           ...(draft.location ? [row('สถานที่', draft.location)] : []),
+          ...(draft.note ? [row('หมายเหตุ', draft.note)] : []),
         ],
       };
     }
