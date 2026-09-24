@@ -742,10 +742,47 @@ select {
 }
 
 .board-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  /* A column of weeks; each week is its own 7-column row, so a trip's bar can
+     be laid straight across it. */
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid var(--border);
   border-left: 1px solid var(--border);
+}
+
+.board-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  position: relative;
+}
+
+/* A trip's bar, drawn over the row it crosses. */
+.board-span {
+  position: absolute;
+  height: 15px;
+  line-height: 15px;
+  font-size: 10px;
+  padding: 0 4px;
+  background: var(--chip);
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.board-span.is-start {
+  border-radius: 4px 0 0 4px;
+  margin-left: 2px;
+}
+
+.board-span.is-end {
+  border-radius: 0 4px 4px 0;
+  margin-right: 2px;
+}
+
+.board-span.is-start.is-end {
+  border-radius: 4px;
 }
 
 .board-day {

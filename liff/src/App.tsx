@@ -26,6 +26,7 @@ import {
   type TransactionItem,
 } from './api.js';
 import { openExternal } from './liff.js';
+import { weekSpans } from './spans.js';
 import { Mascot, moodForDay } from './Mascot.js';
 import {
   ASSET_CATEGORIES,
@@ -626,8 +627,10 @@ function CalendarBoard({
   const byDay = useMemo(() => {
     const map = new Map<string, EventSummary[]>();
     for (const ev of events ?? []) {
-      // A trip shows on each of its days.
-      for (const key of eventDayKeys(ev, timezone)) {
+      // A trip is drawn as one bar across its days (see weekSpans), unless
+      // this is the small copy on the dashboard, which only has room for dots.
+      const keys = eventDayKeys(ev, timezone);
+      for (const key of keys.length > 1 && !compact ? [] : keys) {
         const bucket = map.get(key);
         if (bucket) bucket.push(ev);
         else map.set(key, [ev]);
@@ -638,7 +641,18 @@ function CalendarBoard({
       bucket.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.startAt.localeCompare(b.startAt));
     }
     return map;
-  }, [events, timezone]);
+  }, [events, timezone, compact]);
+
+  // Trips, camps, school holidays: everything that lasts more than one day.
+  const spans = useMemo(
+    () =>
+      compact
+        ? []
+        : (events ?? [])
+            .map((ev) => ({ ev, days: eventDayKeys(ev, timezone) }))
+            .filter((s) => s.days.length > 1),
+    [events, timezone, compact],
+  );
 
   const holidayByDay = useMemo(() => new Map(holidays.map((h) => [h.date, h.name])), [holidays]);
 
@@ -654,6 +668,8 @@ function CalendarBoard({
   while (cells.length % 7 !== 0) cells.push(null);
 
   const maxChips = 2;
+  const weeks: Array<Array<{ key: string; day: number; weekday: number } | null>> = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
 
   return (
     <div className={`board-cal${compact ? ' board-cal-compact' : ''}`}>
@@ -689,7 +705,16 @@ function CalendarBoard({
       </div>
 
       <div className="board-grid">
-        {cells.map((cell, i) => {
+        {weeks.map((week, w) => {
+          const bars = weekSpans(week, spans);
+          const lanes = bars.reduce((most, b) => Math.max(most, b.lane + 1), 0);
+          return (
+            <div
+              key={`week-${w}`}
+              className="board-week"
+              style={{ '--lanes': lanes } as React.CSSProperties}
+            >
+        {week.map((cell, i) => {
           if (!cell) return <div key={`blank-${i}`} className="board-day board-day-blank" />;
 
           const dayEvents = byDay.get(cell.key) ?? [];
@@ -719,6 +744,8 @@ function CalendarBoard({
                 .join(' · ')}
             >
               <span className="board-num">{cell.day}</span>
+              {/* Room for the bars drawn over this row. */}
+              {lanes > 0 && <span className="board-lane-space" style={{ height: lanes * 17 }} />}
 
               {compact ? (
                 dayEvents.length > 0 && (
@@ -744,6 +771,29 @@ function CalendarBoard({
                 </>
               )}
             </button>
+          );
+        })}
+
+              {/* One bar per trip, straight across the days it covers. Taps fall
+                  through to the day underneath, so the day's list still opens. */}
+              {bars.map((bar) => (
+                <span
+                  key={`${bar.ev.id}|${bar.ev.startAt}`}
+                  className={`board-span${bar.isStart ? ' is-start' : ''}${bar.isEnd ? ' is-end' : ''}`}
+                  style={
+                    {
+                      left: `${(bar.from * 100) / 7}%`,
+                      width: `${((bar.to - bar.from + 1) * 100) / 7}%`,
+                      top: `${22 + bar.lane * 17}px`,
+                      '--chip': eventCategoryColor(bar.ev.category),
+                    } as React.CSSProperties
+                  }
+                >
+                  {/* Named again at the top of each week it runs into. */}
+                  {bar.isStart || bar.from === 0 ? bar.ev.title : ' '}
+                </span>
+              ))}
+            </div>
           );
         })}
       </div>
@@ -1500,6 +1550,13 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
       {occurrence && (
         <div className="muted">
           แก้เฉพาะวันที่ {thaiShortDayMonth(dayKey(occurrence, timezone))} — ครั้งอื่นยังเหมือนเดิม
+        </div>
+      )}
+
+      {/* Tapped from a day in the middle of a trip: say that both ends move. */}
+      {!occurrence && existing?.endAt && (
+        <div className="muted">
+          แก้ได้ทั้งช่วง {spanLabel(existing, timezone)} — เปลี่ยนวันเริ่มหรือวันสุดท้ายได้เลย
         </div>
       )}
 
