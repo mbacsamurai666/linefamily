@@ -322,6 +322,11 @@ export const api = {
   /** A short-lived link to this family's backup file, to open outside LINE. */
   exportLink: () =>
     request<{ url: string; expiresInMinutes: number }>('/export/link', { method: 'POST' }),
+  /** The family's read-only calendar feed; `reset` revokes every old link. */
+  calendarLink: (reset = false) =>
+    request<{ url: string; webcalUrl: string }>(`/calendar/ics-link${reset ? '?reset=1' : ''}`, {
+      method: 'POST',
+    }),
   loans: () => request<{ items: Loan[] }>('/loans'),
   addLoan: (body: { borrowerName: string; principalAmountBaht: number; dueAt?: string; note?: string }) =>
     request('/loans', { method: 'POST', body: JSON.stringify(body) }),

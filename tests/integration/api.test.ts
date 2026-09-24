@@ -38,6 +38,8 @@ beforeEach(async () => {
     // auth middleware and every route behind it, without ever going online.
     verifyToken: async (idToken) =>
       idToken === TOKEN ? { lineUserId: LINE_USER_ID } : null,
+    // Where the calendar feed and the backup link point.
+    publicBaseUrl: 'https://bot.example.com',
   };
   app = createApiRouter(deps);
 });
@@ -1043,5 +1045,24 @@ describe('reminders for one appointment', () => {
       });
       expect(res.status).toBe(400);
     }
+  });
+});
+
+describe('the calendar feed', () => {
+  it('hands out one link, keeps it, and can revoke it', async () => {
+    const first = (await (await authed('/calendar/ics-link', { method: 'POST' })).json()) as {
+      url: string;
+      webcalUrl: string;
+    };
+    expect(first.url).toMatch(/\/calendar\/[\w-]{20,}\.ics$/);
+    expect(first.webcalUrl.startsWith('webcal:')).toBe(true);
+
+    const again = (await (await authed('/calendar/ics-link', { method: 'POST' })).json()) as { url: string };
+    expect(again.url).toBe(first.url);
+
+    const reset = (await (await authed('/calendar/ics-link?reset=1', { method: 'POST' })).json()) as {
+      url: string;
+    };
+    expect(reset.url).not.toBe(first.url);
   });
 });

@@ -33,6 +33,11 @@ model Family {
   digestEveryMorning Boolean @default(true)
   /// The same for the evening, off unless asked for.
   digestEveryEvening Boolean @default(false)
+  /// Secret in the URL of this family's read-only iCalendar feed, so the same
+  /// calendar can be subscribed to from Google Calendar or a phone. Null until
+  /// someone asks for the link; changing it revokes every copy of the old one.
+  calendarToken String? @unique
+
   /// ISO weekdays the digests go out on, Monday 1 … Sunday 7.
   digestDays         Int[]   @default([1, 2, 3, 4, 5, 6, 7])
 

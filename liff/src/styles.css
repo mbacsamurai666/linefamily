@@ -1102,6 +1102,53 @@ select {
   font-weight: 600;
 }
 
+/* Everything coming up, with a search box over it. */
+.agenda-search {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  background: var(--surface);
+  margin-bottom: 10px;
+}
+
+.agenda-day {
+  margin-bottom: 14px;
+}
+
+.agenda-day-heading {
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--brand-dark);
+  padding: 0 0 6px;
+}
+
+.agenda-more {
+  width: 100%;
+  border: 1px dashed var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 10px 0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.feed-url {
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
 .week-scroll {
   overflow-x: auto;
   margin: 0 -16px 12px;
@@ -1194,6 +1241,34 @@ select {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A trip's band runs across the days, so its pieces meet at the column edge. */
+.week-allday-chip.is-span {
+  border-radius: 0;
+  margin: 0 -3px;
+  padding-left: 8px;
+}
+
+.week-allday-chip.is-span.is-start {
+  border-radius: 5px 0 0 5px;
+  margin-left: 0;
+  padding-left: 5px;
+}
+
+.week-allday-chip.is-span.is-end {
+  border-radius: 0 5px 5px 0;
+  margin-right: 0;
+}
+
+.week-allday-chip.is-span.is-start.is-end {
+  border-radius: 5px;
+}
+
+/* Keeps a lane's row height when a day has no piece of that trip. */
+.week-allday-gap {
+  display: block;
+  height: 19px;
 }
 
 .week-timeline {

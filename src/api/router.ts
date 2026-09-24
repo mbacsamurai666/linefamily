@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Hono } from 'hono';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
 import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js';
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
@@ -573,6 +574,39 @@ export function createApiRouter(deps: ApiDeps) {
     return c.json({
       url: `${deps.publicBaseUrl.replace(/\/+$/, '')}/export/${token}`,
       expiresInMinutes: EXPORT_LINK_TTL_MINUTES,
+    });
+  });
+
+  /**
+   * The family's own calendar feed. The token in the URL is the whole
+   * credential, so it is made once and kept; "reset" issues a new one, which
+   * is how a link that went somewhere it should not is taken back.
+   */
+  app.post('/calendar/ics-link', async (c) => {
+    const member = c.get('member');
+    if (!deps.publicBaseUrl) return c.json({ error: 'ยังไม่เปิดใช้บนเซิร์ฟเวอร์นี้' }, 503);
+
+    const reset = c.req.query('reset') === '1';
+    const family = await deps.prisma.family.findUniqueOrThrow({
+      where: { id: member.familyId },
+      select: { calendarToken: true },
+    });
+    const token =
+      family.calendarToken && !reset
+        ? family.calendarToken
+        : (
+            await deps.prisma.family.update({
+              where: { id: member.familyId },
+              data: { calendarToken: randomBytes(24).toString('base64url') },
+              select: { calendarToken: true },
+            })
+          ).calendarToken;
+
+    const base = deps.publicBaseUrl.replace(/\/+$/, '');
+    return c.json({
+      url: `${base}/calendar/${token}.ics`,
+      /** What a phone's calendar app expects, so tapping it offers to subscribe. */
+      webcalUrl: `${base.replace(/^https?:/, 'webcal:')}/calendar/${token}.ics`,
     });
   });
 

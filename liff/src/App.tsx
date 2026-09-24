@@ -986,7 +986,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   // The selected day is the one source of truth: the board shows its month,
   // the week view its week, and the panel below its appointments.
   const [selected, setSelected] = useState<string>(initialDay ?? todayKey);
-  const [calView, setCalView] = useState<'board' | 'week'>('board');
+  const [calView, setCalView] = useState<'board' | 'week' | 'list'>('board');
   // One kind at a time — "what's on for school this month" — or everything.
   const [kind, setKind] = useState<string | null>(null);
   const [monthData, setMonthData] = useState<{
@@ -1093,6 +1093,9 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         <button className={calView === 'week' ? 'active' : ''} onClick={() => setCalView('week')}>
           สัปดาห์
         </button>
+        <button className={calView === 'list' ? 'active' : ''} onClick={() => setCalView('list')}>
+          รายการ
+        </button>
         {/* Somewhere to land after browsing months ahead. */}
         {(selected !== todayKey || !todayKey.startsWith(monthKey)) && (
           <button
@@ -1145,11 +1148,20 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
             setExpandedKey(null);
           }}
         />
-      ) : (
+      ) : calView === 'week' ? (
         <WeekView timezone={timezone} selected={selected} todayKey={todayKey} onSelectDay={setSelected} />
+      ) : (
+        <AgendaList
+          timezone={timezone}
+          todayKey={todayKey}
+          onOpenDay={(key) => {
+            setSelected(key);
+            setCalView('board');
+          }}
+        />
       )}
 
-      <div className="cal-detail">
+      <div className="cal-detail" hidden={calView === 'list'}>
         <div className="cal-detail-heading">
           {selected === todayKey ? 'วันนี้' : thaiShortDayMonth(selected)}
           {total > 0 && ` (${total})`}
@@ -1265,6 +1277,113 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   );
 }
 
+/** How far ahead the list looks, in the chunks the calendar API allows. */
+const AGENDA_DAYS = 45;
+
+/**
+ * Everything coming up, one day after another — the view to open when the
+ * question is "what's next" rather than "what's on the 12th". Search narrows
+ * it by title, place or note.
+ */
+function AgendaList({
+  timezone,
+  todayKey,
+  onOpenDay,
+}: {
+  timezone: string;
+  todayKey: string;
+  onOpenDay: (key: string) => void;
+}) {
+  const [events, setEvents] = useState<EventSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [weeks, setWeeks] = useState(1);
+
+  useEffect(() => {
+    // The calendar API answers 45 days at a time, so looking further ahead
+    // means asking for the next stretch, not a longer range.
+    const stretches = Array.from({ length: weeks }, (_, i) => {
+      const from = addDaysToKey(todayKey, AGENDA_DAYS * i);
+      return api.events(`${from}T00:00:00`, `${addDaysToKey(from, AGENDA_DAYS - 1)}T23:59:59`);
+    });
+    Promise.all(stretches)
+      .then((results) => setEvents(results.flatMap((r) => r.items)))
+      .catch((e: Error) => setError(e.message));
+  }, [todayKey, weeks]);
+
+  const q = query.trim().toLowerCase();
+  const matches = (ev: EventSummary) =>
+    q === '' ||
+    ev.title.toLowerCase().includes(q) ||
+    (ev.location ?? '').toLowerCase().includes(q) ||
+    eventCategoryLabel(ev.category).includes(q);
+
+  const byDay = new Map<string, EventSummary[]>();
+  for (const ev of (events ?? []).filter(matches)) {
+    // A trip belongs to the day it starts, with its span written beside it.
+    const key = eventDayKeys(ev, timezone)[0] as string;
+    const bucket = byDay.get(key);
+    if (bucket) bucket.push(ev);
+    else byDay.set(key, [ev]);
+  }
+  const days = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <div className="agenda-list">
+      <input
+        type="search"
+        className="agenda-search"
+        placeholder="ค้นหานัด เช่น สอบ, จูไห่, โรงเรียน"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        aria-label="ค้นหานัด"
+      />
+
+      {error && <p className="error">{error}</p>}
+      {!events && <p className="loading">กำลังโหลด...</p>}
+      {events && days.length === 0 && (
+        <p className="empty">{q ? 'ไม่เจอนัดที่ค้นหาครับ' : 'ยังไม่มีนัดในช่วงนี้ครับ'}</p>
+      )}
+
+      {days.map(([key, items]) => (
+        <div key={key} className="agenda-day">
+          <button type="button" className="agenda-day-heading" onClick={() => onOpenDay(key)}>
+            {key === todayKey ? 'วันนี้' : thaiShortDayMonth(key)}
+            <span className="muted"> ({items.length})</span>
+          </button>
+          <ul className="list">
+            {items.map((ev) => (
+              <li key={`${ev.id}|${ev.startAt}`} className="agenda-item" onClick={() => onOpenDay(key)}>
+                <span className="event-swatch" style={{ background: eventCategoryColor(ev.category) }} />
+                <div className="agenda-text">
+                  <div>
+                    {ev.title}
+                    {ev.repeats && <span className="muted"> 🔁</span>}
+                  </div>
+                  <div className="muted">
+                    <span className="kind-tag" style={{ color: eventCategoryColor(ev.category) }}>
+                      {eventCategoryIcon(ev.category)} {eventCategoryLabel(ev.category)}
+                    </span>
+                    {' · '}
+                    {spanLabel(ev, timezone) ?? (ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt))}
+                    {ev.location ? ` · ${ev.location}` : ''}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+
+      {events && weeks < 4 && (
+        <button type="button" className="agenda-more" onClick={() => setWeeks((w) => w + 1)}>
+          ดูไกลกว่านี้อีก {AGENDA_DAYS} วัน
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface WeekViewProps {
   timezone: string;
   /** "YYYY-MM-DD" of the day currently selected — determines which week shows. */
@@ -1319,15 +1438,29 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
   const byDay = useMemo(() => {
     const map = new Map<string, EventSummary[]>();
     for (const ev of events ?? []) {
-      // An all-day trip fills its every day; a timed block is drawn where it starts.
-      for (const key of ev.allDay ? eventDayKeys(ev, timezone) : [dayKey(ev.startAt, timezone)]) {
-        const bucket = map.get(key);
-        if (bucket) bucket.push(ev);
-        else map.set(key, [ev]);
-      }
+      // A trip runs as one band above the timeline (bars, below); everything
+      // else belongs to the day it starts on.
+      if (eventDayKeys(ev, timezone).length > 1) continue;
+      const key = dayKey(ev.startAt, timezone);
+      const bucket = map.get(key);
+      if (bucket) bucket.push(ev);
+      else map.set(key, [ev]);
     }
     return map;
   }, [events, timezone]);
+
+  // Trips keep the same row all week, so the eye can follow one across.
+  const bars = useMemo(
+    () =>
+      weekSpans(
+        weekDays.map((d) => ({ key: d.key })),
+        (events ?? [])
+          .map((ev) => ({ ev, days: eventDayKeys(ev, timezone) }))
+          .filter((s) => s.days.length > 1),
+      ),
+    [events, timezone, weekDays],
+  );
+  const laneCount = bars.reduce((most, b) => Math.max(most, b.lane + 1), 0);
 
   const selectEvent = async (ev: EventSummary) => {
     setEditing(null);
@@ -1411,8 +1544,26 @@ function WeekView({ timezone, selected, todayKey, onSelectDay }: WeekViewProps) 
                     <span className="week-day-num">{d.day}</span>
                   </button>
 
-                  {allDayEvents.length > 0 && (
+                  {(allDayEvents.length > 0 || laneCount > 0) && (
                     <div className="week-allday">
+                      {Array.from({ length: laneCount }, (_, lane) => {
+                        const bar = bars.find((b) => b.lane === lane && b.from <= i && i <= b.to);
+                        if (!bar) return <span key={`lane-${lane}`} className="week-allday-gap" />;
+                        const start = bar.from === i;
+                        return (
+                          <button
+                            type="button"
+                            key={`lane-${lane}`}
+                            className={`week-allday-chip is-span${start && bar.isStart ? ' is-start' : ''}${
+                              bar.to === i && bar.isEnd ? ' is-end' : ''
+                            }`}
+                            style={{ background: eventCategoryColor(bar.ev.category) }}
+                            onClick={() => selectEvent(bar.ev as EventSummary)}
+                          >
+                            {start ? bar.ev.title : '\u00a0'}
+                          </button>
+                        );
+                      })}
                       {allDayEvents.map((ev) => (
                         <button
                           type="button"
@@ -2814,6 +2965,7 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
       <MedicationsSection openAdd={focus === 'medications'} />
       <ChoresSection openAdd={focus === 'chores'} />
       <EmergencySection openEdit={focus === 'emergency'} />
+      <CalendarFeedSection />
       <BackupSection />
     </div>
   );
@@ -3255,6 +3407,76 @@ function EmergencySection({ openEdit }: { openEdit?: boolean }) {
 }
 
 /** One file with everything in it, for the family to keep somewhere else. */
+/**
+ * The family's calendar, subscribed to from a phone or Google Calendar. The
+ * link is the whole credential — anyone holding it can read the calendar —
+ * so it says so, and can be revoked.
+ */
+function CalendarFeedSection() {
+  const [link, setLink] = useState<{ url: string; webcalUrl: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const fetchLink = async (reset = false) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      setLink(await api.calendarLink(reset));
+      if (reset) setNote('ออกลิงก์ใหม่แล้ว ลิงก์เดิมใช้ไม่ได้อีกต่อไป');
+    } catch (err) {
+      setNote(readableError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link.url);
+      setNote('คัดลอกลิงก์แล้ว');
+    } catch {
+      setNote('คัดลอกไม่ได้ กดค้างที่ลิงก์เพื่อคัดลอกแทนได้ครับ');
+    }
+  };
+
+  return (
+    <div className="dash-section" id="section-calendar-feed">
+      <div className="dash-section-heading">📆 ซิงก์เข้าปฏิทินมือถือ</div>
+      <p className="muted">
+        เปิดปฏิทินบ้านเราใน Google Calendar หรือปฏิทินของไอโฟน/แอนดรอยด์ได้ นัดที่เพิ่มในแอปนี้จะไปโผล่เอง
+        (อ่านอย่างเดียว แก้จากปฏิทินนั้นไม่ได้)
+      </p>
+
+      {!link ? (
+        <button type="button" className="form-toggle" onClick={() => fetchLink()} disabled={busy}>
+          {busy ? 'กำลังสร้างลิงก์...' : '🔗 ขอลิงก์ปฏิทิน'}
+        </button>
+      ) : (
+        <>
+          <div className="feed-url">{link.url}</div>
+          <div className="row-actions">
+            <button type="button" onClick={copy}>
+              คัดลอกลิงก์
+            </button>
+            <button type="button" onClick={() => openExternal(link.webcalUrl)}>
+              เปิดในปฏิทินมือถือ
+            </button>
+          </div>
+          <p className="muted">
+            ใน Google Calendar เลือก “ปฏิทินอื่นๆ → จาก URL” แล้ววางลิงก์นี้ · ใครถือลิงก์นี้อ่านปฏิทินได้
+            ถ้าหลุดให้กดออกลิงก์ใหม่
+          </p>
+          <button type="button" className="link-button" onClick={() => fetchLink(true)} disabled={busy}>
+            ออกลิงก์ใหม่ (ยกเลิกลิงก์เดิม)
+          </button>
+        </>
+      )}
+      {note && <p className="muted">{note}</p>}
+    </div>
+  );
+}
+
 function BackupSection() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);

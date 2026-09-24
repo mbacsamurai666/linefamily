@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { DateTime } from 'luxon';
 import { validateSignature, type WebhookEvent } from '@line/bot-sdk';
 import type { ApiDeps } from '../api/router.js';
 import { createApiRouter } from '../api/router.js';
 import { exportFamily } from '../modules/export.js';
+import { buildFamilyIcs } from '../modules/ics.js';
 import type { HealthReport } from '../modules/health.js';
 import type { WebhookDeps } from './webhook.js';
 import { handleEvent } from './webhook.js';
@@ -64,6 +66,25 @@ export function createApp(deps: AppDeps) {
     // It never changes, and LINE's own cache should keep it out of our queries.
     c.header('cache-control', 'public, max-age=604800, immutable');
     return c.body(new Uint8Array(row.png));
+  });
+
+  /**
+   * The family's calendar, for Google Calendar or a phone to subscribe to.
+   * The token is the whole credential: unguessable, and revoked by asking the
+   * app for a new link (see /api/calendar/ics-link?reset=1).
+   */
+  app.get('/calendar/:token.ics', async (c) => {
+    const token = c.req.param('token.ics')?.replace(/\.ics$/, '');
+    const family = token
+      ? await deps.prisma.family.findFirst({ where: { calendarToken: token }, select: { id: true, timezone: true } })
+      : null;
+    if (!family) return c.text('ลิงก์นี้ใช้ไม่ได้แล้วครับ เปิดแอปแล้วขอลิงก์ใหม่', 404);
+
+    const ics = await buildFamilyIcs(deps.prisma, family.id, DateTime.now().setZone(family.timezone));
+    c.header('content-type', 'text/calendar; charset=utf-8');
+    // Calendars poll this; an hour is as fresh as most of them go anyway.
+    c.header('cache-control', 'public, max-age=3600');
+    return c.body(ics);
   });
 
   /**
