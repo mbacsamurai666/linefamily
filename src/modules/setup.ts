@@ -20,7 +20,6 @@ export type SetupKey =
   | 'medications'
   | 'chores'
   | 'emergency'
-  | 'budgets'
   | 'birthdays';
 
 export interface SetupItem {
@@ -42,12 +41,11 @@ export async function computeSetupStatus(
   familyId: string,
   memberId: string,
 ): Promise<SetupStatus> {
-  const [bills, documents, medications, chores, budgets, birthdays, me] = await Promise.all([
+  const [bills, documents, medications, chores, birthdays, me] = await Promise.all([
     prisma.bill.count({ where: { familyId, active: true } }),
     prisma.document.count({ where: { familyId } }),
     prisma.medication.count({ where: { member: { familyId }, active: true } }),
     prisma.chore.count({ where: { familyId, active: true } }),
-    prisma.budget.count({ where: { familyId } }),
     prisma.member.count({ where: { familyId, birthDate: { not: null } } }),
     prisma.member.findUnique({
       where: { id: memberId },
@@ -94,13 +92,6 @@ export async function computeSetupStatus(
       hint: 'กรุ๊ปเลือด แพ้ยา โรคประจำตัว — เปิดดูได้ทันทีตอนที่ต้องใช้จริง',
       done: emergencyFilled,
       count: emergencyFilled ? 1 : 0,
-    },
-    {
-      key: 'budgets',
-      label: 'งบรายเดือน',
-      hint: 'เตือนเมื่อใช้ถึง 80% และเมื่อเกินงบ',
-      done: budgets > 0,
-      count: budgets,
     },
     {
       key: 'birthdays',
