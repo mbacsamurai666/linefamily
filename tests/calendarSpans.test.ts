@@ -1,22 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { weekSpans } from '../liff/src/spans.js';
-import type { EventSummary } from '../liff/src/api.js';
+import { weekSpans, type SpanEvent } from '../liff/src/spans.js';
 
 /**
  * A trip is one bar across the days it covers, the way a wall calendar draws
  * it — not one chip per day, which is what the family was looking at.
  */
 
-const ev = (id: string, title: string): EventSummary => ({
-  id,
-  title,
-  category: 'TRAVEL',
-  startAt: '',
-  endAt: null,
-  allDay: true,
-  location: null,
-  repeats: false,
-});
+const ev = (id: string, title: string): SpanEvent => ({ id, title, category: 'TRAVEL', startAt: '' });
 
 /** A week of the October 2026 board: Sun 4 Oct … Sat 10 Oct. */
 const week = ['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10'].map(

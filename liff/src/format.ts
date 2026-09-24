@@ -145,6 +145,21 @@ export function eventCategoryIcon(category: string): string {
   return EVENT_CATEGORY_ICON[category] ?? (EVENT_CATEGORY_ICON.OTHER as string);
 }
 
+/** Month names for the board's own picker. */
+export const THAI_MONTH_SHORT = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.',
+];
+
+/** What one appointment's reminders can be set to, longest first. */
+export const EVENT_REMINDERS: Array<[number, string]> = [
+  [7 * 24 * 60, '7 วัน'],
+  [3 * 24 * 60, '3 วัน'],
+  [24 * 60, '1 วัน'],
+  [120, '2 ชม.'],
+  [30, '30 นาที'],
+];
+
 const THAI_MONTHS_FULL = [
   'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
   'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม',

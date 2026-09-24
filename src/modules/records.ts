@@ -77,6 +77,8 @@ export interface EventPatch {
   note?: string | null;
   /** Null clears it; a name that matches no member is dropped, as on create. */
   attendeeName?: string | null;
+  /** How far ahead to remind, in minutes. Null goes back to the family's setting. */
+  reminderMinutes?: number[] | null;
   /** Null (or empty) turns a repeating appointment back into a one-off. */
   rrule?: string | null;
 }
@@ -116,8 +118,18 @@ export async function updateEvent(
       ...(patch.location !== undefined ? { location: patch.location } : {}),
       ...(patch.note !== undefined ? { note: patch.note } : {}),
       ...(patch.rrule !== undefined ? { rrule: patch.rrule || null } : {}),
+      ...(patch.reminderMinutes ? { reminderOffsets: patch.reminderMinutes } : {}),
     },
   });
+
+  // Back to the family's own setting.
+  if (patch.reminderMinutes === null) {
+    const family = await ctx.prisma.family.findUniqueOrThrow({
+      where: { id: ctx.familyId },
+      select: { eventLeadMinutes: true },
+    });
+    await ctx.prisma.event.update({ where: { id }, data: { reminderOffsets: family.eventLeadMinutes } });
+  }
 
   // Who the event is about lives in a join table, so it is replaced wholesale
   // rather than patched.

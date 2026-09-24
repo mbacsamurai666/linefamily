@@ -91,6 +91,8 @@ export interface EventDetail {
   category: string;
   startAt: string;
   endAt: string | null;
+  /** Minutes before it starts to remind. */
+  reminderMinutes: number[];
   allDay: boolean;
   location: string | null;
   note: string | null;
@@ -296,6 +298,8 @@ export const api = {
     startAt: string;
     /** Last day of a span, "YYYY-MM-DD", inclusive. */
     endAt?: string;
+    /** Minutes before it starts to remind; omit to use the family's setting. */
+    reminderMinutes?: number[];
     allDay: boolean;
     /** Omit to let the server guess it from the title. */
     category?: string;
@@ -348,6 +352,8 @@ export const api = {
       startAt?: string;
       /** Null makes it a single day again. */
       endAt?: string | null;
+      /** Null goes back to the family's setting. */
+      reminderMinutes?: number[] | null;
       allDay?: boolean;
       category?: string;
       location?: string | null;

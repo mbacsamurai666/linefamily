@@ -147,12 +147,17 @@ const documentType = z.enum([
 
 const eventCategory = z.enum(['MEDICAL', 'SCHOOL', 'GOVERNMENT', 'SOCIAL', 'WORK', 'TRAVEL', 'OTHER']);
 
+/** Up to 180 days ahead, at most six reminders per item. */
+const leadMinutes = z.array(z.number().int().min(0).max(180 * 24 * 60)).min(1).max(6);
+
 const eventBody = z.object({
   title: z.string().min(1),
   /** ISO date/time string, local to the family's timezone. */
   startAt: z.string(),
   /** Last day of a span, inclusive; omitted for one day. */
   endAt: z.string().optional(),
+  /** Minutes before it starts to remind; omitted uses the family's setting. */
+  reminderMinutes: leadMinutes.optional(),
   allDay: z.boolean().default(false),
   /** Omitted: guessed from the title, the same as a message in the group. */
   category: eventCategory.optional(),
@@ -250,8 +255,6 @@ const digestSettingsBody = z
   })
   .strict();
 
-/** Up to 180 days ahead, at most six reminders per item. */
-const leadMinutes = z.array(z.number().int().min(0).max(180 * 24 * 60)).min(1).max(6);
 const leadTimesBody = z
   .object({
     event: leadMinutes.optional(),
@@ -272,6 +275,8 @@ const eventPatchBody = z.object({
   startAt: z.string().optional(),
   /** Null makes it a single day again. */
   endAt: z.string().nullable().optional(),
+  /** Null goes back to the family's setting. */
+  reminderMinutes: leadMinutes.nullable().optional(),
   allDay: z.boolean().optional(),
   category: eventCategory.optional(),
   location: z.string().nullable().optional(),
@@ -631,6 +636,7 @@ export function createApiRouter(deps: ApiDeps) {
       startAt: event.startAt.toISOString(),
       endAt: event.endAt ? event.endAt.toISOString() : null,
       allDay: event.allDay,
+      reminderMinutes: event.reminderOffsets,
       location: event.location,
       note: event.note,
       rrule: event.rrule,
@@ -655,6 +661,7 @@ export function createApiRouter(deps: ApiDeps) {
         title: parsed.data.title,
         startAt,
         ...(endAt ? { endAt } : {}),
+        ...(parsed.data.reminderMinutes ? { reminderMinutes: parsed.data.reminderMinutes } : {}),
         allDay: parsed.data.allDay,
         category: parsed.data.category ?? guessEventCategory(parsed.data.title),
         ...(parsed.data.location !== undefined ? { location: parsed.data.location } : {}),

@@ -79,7 +79,7 @@ async function persistEvent(
       startAt: draft.startAt.toJSDate(),
       ...(draft.endAt !== undefined ? { endAt: draft.endAt.toJSDate() } : {}),
       allDay: draft.allDay,
-      reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).event,
+      reminderOffsets: draft.reminderMinutes ?? (await familyLeadTimes(ctx.prisma, ctx.familyId)).event,
       ...(draft.location !== undefined ? { location: draft.location } : {}),
       ...(draft.note !== undefined ? { note: draft.note } : {}),
       ...(draft.rrule !== undefined ? { rrule: draft.rrule } : {}),

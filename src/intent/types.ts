@@ -26,6 +26,8 @@ export interface EventDraft {
   startAt: DateTime;
   /** Last day of a span such as "1-7 ต.ค." (inclusive); absent for one day. */
   endAt?: DateTime;
+  /** Minutes before it starts to remind; absent means the family's own setting. */
+  reminderMinutes?: number[];
   allDay: boolean;
   category: EventCategory;
   location?: string;

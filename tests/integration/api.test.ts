@@ -1004,3 +1004,44 @@ describe('a trip across several days, from the app', () => {
     expect((await db.prisma.event.findUniqueOrThrow({ where: { id: event.id } })).endAt).toBeNull();
   });
 });
+
+describe('reminders for one appointment', () => {
+  const DAY = 24 * 60;
+
+  it('override the family setting, and can be handed back to it', async () => {
+    const created = await authed('/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'สอบว่ายน้ำ',
+        startAt: '2026-10-08T09:00',
+        reminderMinutes: [DAY, 120],
+      }),
+    });
+    expect(created.status).toBe(201);
+    const event = await db.prisma.event.findFirstOrThrow({ where: { title: 'สอบว่ายน้ำ' } });
+    expect(event.reminderOffsets).toEqual([DAY, 120]);
+
+    const jobs = await db.prisma.notificationJob.findMany({ where: { refId: event.id }, orderBy: { dueAt: 'asc' } });
+    expect(jobs).toHaveLength(2);
+
+    await authed(`/events/${event.id}`, { method: 'PATCH', body: JSON.stringify({ reminderMinutes: [30] }) });
+    expect((await db.prisma.event.findUniqueOrThrow({ where: { id: event.id } })).reminderOffsets).toEqual([30]);
+
+    // Null hands it back to whatever the family has set for appointments.
+    await authed(`/events/${event.id}`, { method: 'PATCH', body: JSON.stringify({ reminderMinutes: null }) });
+    const family = await db.prisma.family.findUniqueOrThrow({ where: { id: familyId } });
+    expect((await db.prisma.event.findUniqueOrThrow({ where: { id: event.id } })).reminderOffsets).toEqual(
+      family.eventLeadMinutes,
+    );
+  });
+
+  it('are refused when the list is empty or absurd', async () => {
+    for (const reminderMinutes of [[], [999999]]) {
+      const res = await authed('/events', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'x', startAt: '2026-10-08T09:00', reminderMinutes }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+});

@@ -31,6 +31,8 @@ import { Mascot, moodForDay } from './Mascot.js';
 import {
   ASSET_CATEGORIES,
   EVENT_CATEGORIES,
+  EVENT_REMINDERS,
+  THAI_MONTH_SHORT,
   REPEAT_OPTIONS,
   assetCategoryIcon,
   assetCategoryLabel,
@@ -596,6 +598,8 @@ interface CalendarBoardProps {
   onSelect: (key: string) => void;
   /** Omit to hide the month arrows (the dashboard shows only this month). */
   onMonth?: (delta: number) => void;
+  /** Jump straight to a month, from the picker behind the title. */
+  onPickMonth?: (monthKey: string) => void;
   /** Dots instead of titles — for the small copy hanging in the dashboard room. */
   compact?: boolean;
 }
@@ -617,8 +621,14 @@ function CalendarBoard({
   timezone,
   onSelect,
   onMonth,
+  onPickMonth,
   compact = false,
 }: CalendarBoardProps) {
+  const [picking, setPicking] = useState(false);
+  // Which month the picker is showing; the board's own until someone steps years.
+  const [pickYear, setPickYear] = useState(() => Number(monthKey.slice(0, 4)));
+  // Where a swipe began, so a flick left or right turns the month over.
+  const [swipeFrom, setSwipeFrom] = useState<{ x: number; y: number } | null>(null);
   const [year, month] = monthKey.split('-').map(Number) as [number, number];
   const firstWeekday = new Date(year, month - 1, 1).getDay(); // 0 = Sunday
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -685,16 +695,63 @@ function CalendarBoard({
             ‹
           </button>
         )}
-        <div className="board-title">
-          <span className="board-month">{monthName}</span>
-          <span className="board-year">พ.ศ. {year + 543}</span>
-        </div>
+        {onPickMonth ? (
+          <button
+            type="button"
+            className="board-title board-title-button"
+            aria-expanded={picking}
+            onClick={() => {
+              setPickYear(year);
+              setPicking((open) => !open);
+            }}
+          >
+            <span className="board-month">{monthName}</span>
+            <span className="board-year">พ.ศ. {year + 543} ▾</span>
+          </button>
+        ) : (
+          <div className="board-title">
+            <span className="board-month">{monthName}</span>
+            <span className="board-year">พ.ศ. {year + 543}</span>
+          </div>
+        )}
         {onMonth && (
           <button type="button" className="board-nav" onClick={() => onMonth(1)} aria-label="เดือนถัดไป">
             ›
           </button>
         )}
       </div>
+
+      {picking && onPickMonth && (
+        <div className="month-picker">
+          <div className="month-picker-years">
+            <button type="button" onClick={() => setPickYear((y) => y - 1)} aria-label="ปีก่อนหน้า">
+              ‹
+            </button>
+            <span>พ.ศ. {pickYear + 543}</span>
+            <button type="button" onClick={() => setPickYear((y) => y + 1)} aria-label="ปีถัดไป">
+              ›
+            </button>
+          </div>
+          <div className="month-picker-grid">
+            {THAI_MONTH_SHORT.map((name, i) => {
+              const key = `${pickYear}-${String(i + 1).padStart(2, '0')}`;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={key === monthKey ? 'active' : ''}
+                  onClick={() => {
+                    onPickMonth(key);
+                    setPicking(false);
+                  }}
+                >
+                  {name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="board-weekdays">
         {WEEKDAY_LABELS.map((w, i) => (
@@ -704,7 +761,23 @@ function CalendarBoard({
         ))}
       </div>
 
-      <div className="board-grid">
+      <div
+        className="board-grid"
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          setSwipeFrom(t ? { x: t.clientX, y: t.clientY } : null);
+        }}
+        onTouchEnd={(e) => {
+          const t = e.changedTouches[0];
+          if (!swipeFrom || !t || !onMonth) return;
+          const dx = t.clientX - swipeFrom.x;
+          // Sideways and far enough to be a flick, not a tap or a scroll.
+          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(t.clientY - swipeFrom.y) * 1.5) {
+            onMonth(dx < 0 ? 1 : -1);
+          }
+          setSwipeFrom(null);
+        }}
+      >
         {weeks.map((week, w) => {
           const bars = weekSpans(week, spans);
           const lanes = bars.reduce((most, b) => Math.max(most, b.lane + 1), 0);
@@ -1020,6 +1093,18 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         <button className={calView === 'week' ? 'active' : ''} onClick={() => setCalView('week')}>
           สัปดาห์
         </button>
+        {/* Somewhere to land after browsing months ahead. */}
+        {(selected !== todayKey || !todayKey.startsWith(monthKey)) && (
+          <button
+            className="cal-today"
+            onClick={() => {
+              setSelected(todayKey);
+              setExpandedKey(null);
+            }}
+          >
+            วันนี้
+          </button>
+        )}
       </div>
 
       {kindCounts.length > 1 && (
@@ -1054,6 +1139,11 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
             setExpandedKey(null);
           }}
           onMonth={changeMonth}
+          onPickMonth={(key) => {
+            // The month shown follows the day selected.
+            setSelected(todayKey.startsWith(key) ? todayKey : `${key}-01`);
+            setExpandedKey(null);
+          }}
         />
       ) : (
         <WeekView timezone={timezone} selected={selected} todayKey={todayKey} onSelectDay={setSelected} />
@@ -1470,6 +1560,11 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [attendeeName, setAttendeeName] = useState(existing?.attendeeNames[0] ?? '');
   const [note, setNote] = useState(existing?.note ?? '');
   const [rrule, setRrule] = useState(existing?.rrule ?? '');
+  // This appointment's own reminders. Null means "whatever the family set".
+  const [reminders, setReminders] = useState<number[] | null>(
+    existing && !occurrence ? existing.reminderMinutes : null,
+  );
+  const [remindersChosen, setRemindersChosen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -1509,6 +1604,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           note: note.trim() || null,
           rrule: rrule || null,
           endAt: spanEnd,
+          ...(remindersChosen ? { reminderMinutes: reminders } : {}),
         });
       } else {
         await api.addEvent({
@@ -1521,6 +1617,7 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
           ...(attendeeName.trim() ? { attendeeName: attendeeName.trim() } : {}),
           ...(note.trim() ? { note: note.trim() } : {}),
           ...(rrule ? { rrule } : {}),
+          ...(remindersChosen && reminders ? { reminderMinutes: reminders } : {}),
         });
       }
       onAdded();
@@ -1615,6 +1712,55 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
             ))}
           </select>
         </div>
+
+        {!occurrence && (
+          <div className="field">
+            <label htmlFor="event-reminders">เตือนล่วงหน้า</label>
+            <div className="segmented lead-kind" id="event-reminders" role="group" aria-label="เตือนล่วงหน้า">
+              {EVENT_REMINDERS.map(([minutes, label]) => {
+                const on = reminders?.includes(minutes) ?? false;
+                return (
+                  <button
+                    key={minutes}
+                    type="button"
+                    className={on ? 'active' : ''}
+                    aria-pressed={on}
+                    onClick={() => {
+                      const base = reminders ?? [];
+                      const next = on ? base.filter((m) => m !== minutes) : [...base, minutes];
+                      setReminders(next.sort((a, b) => b - a));
+                      setRemindersChosen(true);
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="muted">
+              {reminders === null
+                ? 'ใช้ค่าของบ้าน (ตั้งได้ในแท็บจัดการ)'
+                : reminders.length === 0
+                  ? 'ไม่เตือนนัดนี้'
+                  : `เตือน ${reminders.length} รอบ`}
+              {remindersChosen && (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => {
+                      setReminders(null);
+                      setRemindersChosen(true);
+                    }}
+                  >
+                    ใช้ค่าของบ้าน
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* A single date pulled out of a series is a one-off by definition. */}
         {!occurrence && (

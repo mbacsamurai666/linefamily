@@ -1,7 +1,13 @@
-import type { EventSummary } from './api.js';
+/** Just enough of an appointment to lay it out; see SpanEvent in api.ts. */
+export interface SpanEvent {
+  id: string;
+  title: string;
+  category: string;
+  startAt: string;
+}
 
 export interface SpanBar {
-  ev: EventSummary;
+  ev: SpanEvent;
   /** Column this week's piece runs from, and to, both inclusive (0 = Sunday). */
   from: number;
   to: number;
@@ -18,7 +24,7 @@ export interface SpanBar {
  */
 export function weekSpans(
   week: Array<{ key: string } | null>,
-  spans: Array<{ ev: EventSummary; days: string[] }>,
+  spans: Array<{ ev: SpanEvent; days: string[] }>,
 ): SpanBar[] {
   const bars: SpanBar[] = [];
   const taken: string[][] = [];

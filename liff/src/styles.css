@@ -750,6 +750,84 @@ select {
   border-left: 1px solid var(--border);
 }
 
+/* The month's name doubles as the month picker's button. */
+.board-title-button {
+  border: none;
+  background: none;
+  font-family: inherit;
+  color: inherit;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.month-picker {
+  padding: 10px 12px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.month-picker-years {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.month-picker-years button {
+  border: none;
+  background: var(--surface-muted);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  color: var(--brand-dark);
+}
+
+.month-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.month-picker-grid button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 9px 0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.month-picker-grid button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+/* "วันนี้" appears in the view toggle once the board has wandered off. */
+.cal-today {
+  flex: none !important;
+  padding: 8px 14px !important;
+  color: var(--brand-dark) !important;
+  font-weight: 700;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--brand-dark);
+  text-decoration: underline;
+}
+
 .board-week {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
