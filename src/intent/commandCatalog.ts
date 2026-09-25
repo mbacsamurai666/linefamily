@@ -69,6 +69,7 @@ export const COMMAND_CATALOG: readonly CatalogEntry[] = [
   { example: 'พาแม่ไปหาหมอ 19 ก.ย. 14:00', means: 'นัดหมาย (เรื่อง วัน เวลา)', effect: 'record' },
   { example: 'ประชุมผู้ปกครอง 25 ก.ย.', means: 'นัดทั้งวัน ไม่ระบุเวลา', effect: 'record' },
   { example: 'เที่ยวจูไห่ 1-7 ต.ค.', means: 'นัดหลายวัน (วันเริ่ม-วันสุดท้าย)', effect: 'record' },
+  { example: 'ซ่อมบ้าน คุณพิษณุ 26 ก.ย. 09:00', means: 'เรื่องที่เป็นงาน ลงบอร์ดงานให้เอง ไม่ใช่ปฏิทิน', effect: 'record' },
   { example: 'น้องพร สอบปลายภาค 22 ก.ย. 09:00', means: 'นัดของลูก ชื่อนำหน้า', effect: 'record' },
   { example: 'ทุกวันจันทร์ 09:00 กายภาพแม่', means: 'นัดที่เกิดซ้ำ', effect: 'record' },
   { example: 'ค่าข้าว 250', means: 'รายจ่าย (หมวด จำนวนบาท)', effect: 'record' },

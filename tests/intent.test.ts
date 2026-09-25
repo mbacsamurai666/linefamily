@@ -545,3 +545,30 @@ describe('a message of several lines', () => {
     expect(result.draft.category).toBe('OTHER'); // ยาย is not ยา
   });
 });
+
+/** The house keeps its jobs on the board, not in the calendar. */
+describe('work goes to the task board', () => {
+  const rule = new RuleIntentParser();
+
+  it('files a job to be done as a board card, with its due date and who it is for', async () => {
+    const result = await rule.parse('ซ่อมบ้าน คุณพิษณุ มาประชุมหน้างาน 26 ก.ย. 09:00', ctx);
+    expect(result.kind).toBe('task');
+    if (result.kind !== 'task' || result.draft.kind !== 'task') return;
+    expect(result.draft.dueAt?.toFormat("yyyy-MM-dd'T'HH:mm")).toBe('2026-09-26T09:00');
+  });
+
+  it('keeps a repeating one in the calendar — a card has no "every Monday"', async () => {
+    const result = await rule.parse('ประชุมทีมทุกวันจันทร์ 10:00', ctx);
+    expect(result.kind).toBe('event');
+  });
+
+  it('leaves appointments of every other kind where they were', async () => {
+    for (const [text, kind] of [
+      ['พาแม่ไปหาหมอ 26 ก.ย. 14:00', 'event'],
+      ['สอบปลายภาค 26 ก.ย.', 'event'],
+      ['เที่ยวจูไห่ 1-7 ต.ค.', 'event'],
+    ] as const) {
+      expect((await rule.parse(text, ctx)).kind, text).toBe(kind);
+    }
+  });
+});

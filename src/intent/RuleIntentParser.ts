@@ -524,6 +524,25 @@ function matchEvent(fullText: string, ctx: FamilyContext): ParseResult {
       ? 0.7
       : 0.85;
 
+  // Work belongs on the house's task board, not in the calendar: "ซ่อมบ้าน
+  // คุณพิษณุ ส. 26 ก.ย. 09:00" is something to get done and tick off, and the
+  // board is where the family looks for that. A repeating one stays an
+  // appointment — a board card has no "every Monday".
+  if (category === 'WORK' && !repeat) {
+    return {
+      kind: 'task',
+      confidence,
+      source: 'rule',
+      draft: {
+        kind: 'task',
+        title,
+        dueAt: when.start,
+        ...(attendee ? { assigneeName: attendee.name } : {}),
+        ...(note ? { note } : {}),
+      },
+    };
+  }
+
   return {
     kind: 'event',
     confidence,
