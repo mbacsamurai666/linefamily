@@ -1178,6 +1178,17 @@ select {
   color: var(--text-muted);
 }
 
+/* The month's bar fills what the name and the amount leave. */
+.plan-month-row .bar-track {
+  flex: 1;
+  display: block;
+  min-width: 0;
+}
+
+.plan-month-row .bar-fill {
+  display: block;
+}
+
 .plan-month-name {
   width: 38px;
   font-weight: 600;
