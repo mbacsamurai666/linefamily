@@ -75,6 +75,19 @@ export interface BillDraft {
   dueMonth?: number;
   /** Satang to plan for when the amount varies. */
   estimateAmount?: number;
+  /** Money in (a salary) rather than out. OUT when omitted. */
+  direction?: 'IN' | 'OUT';
+  /** ONCE, DAILY or WEEKLY lay the dates out from startsOn; MONTHLY when omitted. */
+  frequency?: 'ONCE' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  /** Days or weeks between DAILY or WEEKLY occurrences. */
+  interval?: number;
+  startsOn?: DateTime;
+  endsOn?: DateTime;
+  note?: string;
+  /** Filed under this category, made on first use like an expense's. */
+  categoryName?: string;
+  /** Amount changes from a given day on — next year's tuition. */
+  amountChanges?: Array<{ effectiveFrom: DateTime; amount: number }>;
 }
 
 export interface DocumentDraft {

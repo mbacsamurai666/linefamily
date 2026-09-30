@@ -1523,6 +1523,421 @@ select {
   color: var(--text-muted);
 }
 
+/* -------------------------------------------------- money on the calendar */
+
+.negative {
+  color: var(--danger);
+}
+
+.money-plus {
+  color: #188a4a;
+}
+
+.pill-paid {
+  background: #e3f5ea;
+  color: #188a4a;
+}
+
+.row-btn-primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: white;
+}
+
+/* Money on the board: an amount, not a title, so it fits a 48px cell. */
+.board-chip-money {
+  --chip: #e29a2b;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-chip-money.dir-in {
+  --chip: #2e9d5b;
+}
+
+.board-chip-money.status-overdue {
+  --chip: var(--danger);
+  font-weight: 700;
+}
+
+.board-chip-money.status-paid {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.board-dots .dot-money {
+  background: #e29a2b;
+}
+
+.board-dots .dot-in {
+  background: #2e9d5b;
+}
+
+.kind-filter .money-toggle {
+  border-style: dashed;
+}
+
+.kind-filter .money-toggle.on {
+  border-style: solid;
+  border-color: #e29a2b;
+  color: #9a5d05;
+}
+
+.kind-filter .chip-money.active {
+  border-color: #e29a2b;
+  background: #e29a2b;
+  color: #fff;
+}
+
+.cal-add-choices {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cal-add-choices .form-toggle {
+  margin: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  font-size: 13px;
+}
+
+.money-swatch {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #fdf1e0;
+  font-size: 15px;
+}
+
+.money-swatch.dir-in {
+  background: #e3f5ea;
+}
+
+.money-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.money-line strong {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.money-overdue .money-line strong {
+  color: var(--danger);
+}
+
+.money-paid .money-line {
+  color: var(--text-muted);
+}
+
+.reserve-hint,
+.reserve-row {
+  background: #fdf6e8;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: #7a4d06;
+}
+
+.amount-change {
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+/* The month in money, under the board. */
+.month-money {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+
+.month-money-loading {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.month-money-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.month-money-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.month-money-grid dt {
+  color: var(--text-muted);
+}
+
+.month-money-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.month-money-grid .indent {
+  padding-left: 12px;
+  font-size: 13px;
+}
+
+.month-money-grid .strong {
+  font-weight: 700;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.month-money-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.month-money-actual {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+/* The dashboard's money card. */
+.fin-alerts {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fin-alert {
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.fin-alert-warn {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.fin-alert-info {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.fin-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.fin-tile {
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fin-tile span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.fin-tile strong {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.fin-tile-key {
+  background: var(--brand-tint);
+}
+
+.fin-subhead {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+
+.fin-chart {
+  margin-bottom: 4px;
+}
+
+.fin-bars {
+  position: relative;
+  height: 110px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+  align-items: end;
+  border-bottom: 1px solid var(--border);
+}
+
+.fin-bar {
+  height: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+
+.fin-bar-running {
+  background: var(--brand);
+  display: block;
+}
+
+.fin-bar-lumpy {
+  background: #e29a2b;
+  display: block;
+}
+
+.fin-reserve-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px dashed #7a4d06;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.fin-bar-labels {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 3px;
+}
+
+.fin-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.fin-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: -1px;
+  margin-right: 3px;
+}
+
+.fin-key-running {
+  background: var(--brand);
+}
+
+.fin-key-lumpy {
+  background: #e29a2b;
+}
+
+.fin-key-reserve {
+  border-top: 2px dashed #7a4d06;
+  height: 0 !important;
+  border-radius: 0 !important;
+}
+
+.fin-upcoming .plan-item-day,
+.fund-history .plan-item-day {
+  width: 58px;
+  flex: none;
+  white-space: nowrap;
+}
+
+.fin-extremes {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* Reserve pots. */
+.fund-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.fund-totals div {
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  min-width: 0;
+}
+
+.fund-totals dt {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.fund-totals dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.fund-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.fund-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fund-numbers {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-fill.bar-behind {
+  background: #e29a2b;
+}
+
+.fund-history {
+  padding-left: 4px;
+}
+
+@media (max-width: 360px) {
+  .fund-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* -------------------------------------------------- the mascot's room */
 
 .room {

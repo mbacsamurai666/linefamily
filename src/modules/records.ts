@@ -3,6 +3,7 @@ import type { DateTime } from 'luxon';
 import type { AssetCategory } from '../intent/assetTypes.js';
 import type { EventCategory } from '../intent/categories.js';
 import type { DocumentType } from '../intent/documentTypes.js';
+import { toDateColumn } from './billOccurrences.js';
 import { expandOccurrences } from '../reminders/occurrences.js';
 import {
   checkBudgetAlert,
@@ -340,6 +341,17 @@ export interface BillPatch {
   dueMonth?: number | null;
   /** Satang to plan for when the amount varies; null clears the estimate. */
   estimateAmount?: number | null;
+  direction?: 'IN' | 'OUT';
+  frequency?: 'ONCE' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  interval?: number;
+  /** Null clears it. */
+  startsOn?: DateTime | null;
+  endsOn?: DateTime | null;
+  note?: string | null;
+  /** Null takes it out of any category. */
+  categoryName?: string | null;
+  /** Replaces every amount change the bill had. */
+  amountChanges?: Array<{ effectiveFrom: DateTime; amount: number }>;
   active?: boolean;
 }
 
@@ -350,9 +362,31 @@ export async function updateBill(
 ): Promise<boolean> {
   const existing = await ctx.prisma.bill.findFirst({
     where: { id, familyId: ctx.familyId },
-    select: { id: true },
+    select: { id: true, direction: true },
   });
   if (!existing) return false;
+
+  const direction = patch.direction ?? existing.direction;
+  let categoryId: string | null | undefined;
+  if (patch.categoryName === null) categoryId = null;
+  else if (patch.categoryName !== undefined) {
+    categoryId = (
+      await ctx.prisma.category.upsert({
+        where: { familyId_name_kind: { familyId: ctx.familyId, name: patch.categoryName, kind: direction } },
+        create: { familyId: ctx.familyId, name: patch.categoryName, kind: direction },
+        update: {},
+      })
+    ).id;
+  }
+
+  if (patch.amountChanges !== undefined) {
+    await ctx.prisma.billAmount.deleteMany({ where: { billId: id } });
+    if (patch.amountChanges.length > 0) {
+      await ctx.prisma.billAmount.createMany({
+        data: patch.amountChanges.map((c) => ({ billId: id, effectiveFrom: toDateColumn(c.effectiveFrom), amount: c.amount })),
+      });
+    }
+  }
 
   await ctx.prisma.bill.update({
     where: { id },
@@ -363,6 +397,13 @@ export async function updateBill(
       ...(patch.everyMonths !== undefined ? { everyMonths: patch.everyMonths } : {}),
       ...(patch.dueMonth !== undefined ? { dueMonth: patch.dueMonth } : {}),
       ...(patch.estimateAmount !== undefined ? { estimateAmount: patch.estimateAmount } : {}),
+      ...(patch.direction !== undefined ? { direction: patch.direction } : {}),
+      ...(patch.frequency !== undefined ? { frequency: patch.frequency } : {}),
+      ...(patch.interval !== undefined ? { interval: patch.interval } : {}),
+      ...(patch.startsOn !== undefined ? { startsOn: patch.startsOn ? toDateColumn(patch.startsOn) : null } : {}),
+      ...(patch.endsOn !== undefined ? { endsOn: patch.endsOn ? toDateColumn(patch.endsOn) : null } : {}),
+      ...(patch.note !== undefined ? { note: patch.note } : {}),
+      ...(categoryId !== undefined ? { categoryId } : {}),
       ...(patch.active !== undefined ? { active: patch.active } : {}),
     },
   });

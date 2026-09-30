@@ -6,7 +6,7 @@ import { DOCUMENT_TYPE_LABEL } from '../../intent/documentTypes.js';
 import type { Draft } from '../../intent/types.js';
 import { formatSatang } from '../../thai/number.js';
 import { recurrenceLabel } from '../../thai/recurrence.js';
-import { formatThaiDate, formatThaiDateTime, formatThaiSpan } from '../format.js';
+import { THAI_MONTHS, formatThaiDate, formatThaiDateTime, formatThaiSpan } from '../format.js';
 
 /**
  * The confirm card is the safety mechanism the whole intent pipeline rests on:
@@ -105,18 +105,40 @@ function describe(draft: Draft, zone: string): CardContent {
         ],
       };
     }
-    case 'bill':
+    case 'bill': {
+      const every = draft.everyMonths ?? 1;
+      const monthName = (m: number) => THAI_MONTHS[m - 1] ?? '';
+      const when =
+        draft.frequency === 'ONCE' && draft.startsOn
+          ? formatThaiDateTime(draft.startsOn.setZone(zone), true)
+          : draft.frequency === 'DAILY'
+            ? (draft.interval ?? 1) > 1 ? `ทุก ${draft.interval} วัน` : 'ทุกวัน'
+            : draft.frequency === 'WEEKLY'
+              ? (draft.interval ?? 1) > 1 ? `ทุก ${draft.interval} สัปดาห์` : 'ทุกสัปดาห์'
+              : every === 1
+                ? `ทุกวันที่ ${draft.dueDay}`
+                : every === 12
+                  ? `ทุกปี ${draft.dueDay} ${monthName(draft.dueMonth ?? 1)}`
+                  : `ทุก ${every} เดือน วันที่ ${draft.dueDay}${draft.dueMonth ? ` (เริ่ม ${monthName(draft.dueMonth)})` : ''}`;
+      const amount = draft.amount ?? draft.estimateAmount;
+      // Twelfths of a year's worth of a bill paid in one go — the pot to fill each month.
+      const lumpy = draft.frequency === 'ONCE' || ((draft.frequency ?? 'MONTHLY') === 'MONTHLY' && every > 1);
+      const perMonth = lumpy && amount !== undefined && draft.frequency !== 'ONCE' ? Math.round(amount / every) : null;
+      const income = draft.direction === 'IN';
       return {
-        heading: 'บิลประจำเดือน',
-        altText: `บิล: ${draft.name}`,
+        heading: income ? 'รายรับประจำ' : 'ค่าใช้จ่ายประจำ',
+        altText: `${income ? 'รายรับ' : 'ค่าใช้จ่าย'}: ${draft.name}`,
         rows: [
-          row('ชื่อบิล', draft.name),
-          ...(draft.amount !== undefined
-            ? [row('จำนวน', `${formatSatang(draft.amount)} บาท`)]
+          row('รายการ', draft.name),
+          ...(amount !== undefined
+            ? [row('จำนวน', `${formatSatang(amount)} บาท${draft.amount === undefined ? ' (ประมาณ)' : ''}`)]
             : []),
-          row('ครบกำหนด', `ทุกวันที่ ${draft.dueDay}`),
+          row('ครบกำหนด', when),
+          ...(draft.categoryName ? [row('หมวด', draft.categoryName)] : []),
+          ...(perMonth !== null ? [row('ควรกันเงิน', `เดือนละ ${formatSatang(perMonth)} บาท`)] : []),
         ],
       };
+    }
     case 'document':
       return {
         heading: 'เอกสารใกล้หมดอายุ',

@@ -64,6 +64,7 @@ model Family {
   deposits      Deposit[]
   tasks         Task[]
   digestImages  DigestImage[]
+  reserves      ReserveEntry[]
 }
 
 enum MemberRole {
@@ -204,6 +205,10 @@ model Transaction {
   /// LINE message id of the receipt/slip image, if it came from one.
   receiptFileId String?
   billId        String?
+  /// Which due date of the bill this paid, when it paid one. Lets a weekly or
+  /// daily bill tell its occurrences apart, where a month alone cannot.
+  billDueOn     DateTime? @db.Date
+  reserveDraw   ReserveEntry?
 
   createdAt DateTime @default(now())
 
@@ -253,6 +258,50 @@ model Budget {
 
 // ---------------------------------------------------------------- bills
 
+enum BillFrequency {
+  ONCE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// A bill's amount from a given day on — tuition goes up next school year,
+/// the premium changes at renewal. The latest one on or before a due date
+/// wins; before the first, the bill's own amount applies.
+model BillAmount {
+  id            String   @id @default(cuid())
+  billId        String
+  effectiveFrom DateTime @db.Date
+  /// Satang.
+  amount        Int
+
+  bill Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@unique([billId, effectiveFrom])
+}
+
+/// Money put aside for a lumpy bill, or taken back out of that pot. The pot
+/// itself is not stored: its target comes from the bill and its balance is
+/// the sum of these, so nothing can drift out of step.
+model ReserveEntry {
+  id       String   @id @default(cuid())
+  familyId String
+  billId   String
+  /// Satang; negative for money taken out (usually to pay the bill).
+  amount   Int
+  at       DateTime @default(now())
+  note     String?
+  /// Set on money taken out to pay the bill, so undoing the payment puts it back.
+  transactionId String? @unique
+
+  family      Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  bill        Bill         @relation(fields: [billId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([familyId])
+  @@index([billId])
+}
+
 model Bill {
   id       String @id @default(cuid())
   familyId String
@@ -275,6 +324,25 @@ model Bill {
   /// What to plan for when the amount varies month to month (water, power).
   /// Never charged or recorded — it only feeds the year's estimate.
   estimateAmount Int?
+
+  /// Money going out (the default, and every bill before this existed) or
+  /// coming in: a salary is a recurring item on the same calendar.
+  direction TxDirection @default(OUT)
+
+  /// How the due dates are laid out. MONTHLY keeps using dueDay, everyMonths
+  /// and dueMonth as before; DAILY and WEEKLY step `interval` days or weeks
+  /// from startsOn; ONCE falls on startsOn alone.
+  frequency BillFrequency @default(MONTHLY)
+  interval  Int           @default(1)
+
+  /// No occurrence before this day, and none after endsOn. Both optional for a
+  /// monthly bill; startsOn is the due date itself for ONCE.
+  startsOn DateTime? @db.Date
+  endsOn   DateTime? @db.Date
+  note     String?
+
+  amounts  BillAmount[]
+  reserves ReserveEntry[]
 
   /// Create a Transaction automatically when marked paid.
   autoCreateTx Boolean @default(true)

@@ -804,6 +804,7 @@ describe('editing and deleting through the API', () => {
     const listed = (await authed('/bills').then((r) => r.json())) as {
       items: Array<{ id: string; name: string; active: boolean }>;
     };
+    // A bill written the old way reads back as a monthly expense, as it always was.
     expect(listed.items).toEqual([
       {
         id: bill.id,
@@ -813,6 +814,15 @@ describe('editing and deleting through the API', () => {
         dueDay: 15,
         everyMonths: 1,
         dueMonth: null,
+        direction: 'OUT',
+        frequency: 'MONTHLY',
+        interval: 1,
+        startsOn: null,
+        endsOn: null,
+        note: null,
+        category: null,
+        frequencyLabel: 'รายเดือน',
+        amountChanges: [],
         active: true,
       },
     ]);

@@ -5,6 +5,7 @@ import {
   type Asset,
   type AgendaItem,
   type BillItem,
+  type MoneyItem,
   type ExpensePlan,
   type ChoreItem,
   type DashboardData,
@@ -27,6 +28,15 @@ import {
 } from './api.js';
 import { openExternal } from './liff.js';
 import { weekSpans } from './spans.js';
+import {
+  FinanceCard,
+  FundsSection,
+  MoneyForm,
+  MoneyRows,
+  MonthMoneySummary,
+  moneyIcon,
+  useMoneyByDay,
+} from './Money.js';
 import { Mascot, moodForDay } from './Mascot.js';
 import {
   ASSET_CATEGORIES,
@@ -396,7 +406,7 @@ function DashboardTab({
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="loading">กำลังโหลด...</p>;
 
-  const { upcoming, tasks } = data;
+  const { upcoming, tasks, finance } = data;
   const noUpcoming =
     upcoming.today.length === 0 && upcoming.next3d.length === 0 && upcoming.next7d.length === 0;
 
@@ -488,6 +498,7 @@ function DashboardTab({
         )}
       </div>
 
+      {finance && <FinanceCard finance={finance} onManage={() => onOpenSetup('bills')} />}
     </div>
   );
 }
@@ -508,6 +519,8 @@ interface CalendarBoardProps {
   onPickMonth?: (monthKey: string) => void;
   /** Dots instead of titles — for the small copy hanging in the dashboard room. */
   compact?: boolean;
+  /** Money falling due in the month, drawn alongside the appointments. */
+  money?: MoneyItem[];
 }
 
 /**
@@ -529,7 +542,9 @@ function CalendarBoard({
   onMonth,
   onPickMonth,
   compact = false,
+  money,
 }: CalendarBoardProps) {
+  const moneyByDay = useMoneyByDay(money);
   const [picking, setPicking] = useState(false);
   // Which month the picker is showing; the board's own until someone steps years.
   const [pickYear, setPickYear] = useState(() => Number(monthKey.slice(0, 4)));
@@ -697,9 +712,10 @@ function CalendarBoard({
           if (!cell) return <div key={`blank-${i}`} className="board-day board-day-blank" />;
 
           const dayEvents = byDay.get(cell.key) ?? [];
+          const dayMoney = moneyByDay.get(cell.key) ?? [];
           const holiday = holidayByDay.get(cell.key);
           const red = cell.weekday === 0 || holiday !== undefined;
-          const extra = dayEvents.length - maxChips;
+          const extra = dayEvents.length + dayMoney.length - maxChips;
 
           return (
             <button
@@ -727,10 +743,13 @@ function CalendarBoard({
               {lanes > 0 && <span className="board-lane-space" style={{ height: lanes * 17 }} />}
 
               {compact ? (
-                dayEvents.length > 0 && (
+                dayEvents.length + dayMoney.length > 0 && (
                   <span className="board-dots">
                     {dayEvents.slice(0, 3).map((ev, j) => (
                       <span key={j} style={{ background: eventCategoryColor(ev.category) }} />
+                    ))}
+                    {dayMoney.slice(0, Math.max(0, 3 - dayEvents.length)).map((m, j) => (
+                      <span key={`m${j}`} className={`dot-money dot-${m.direction.toLowerCase()}`} />
                     ))}
                   </span>
                 )
@@ -744,6 +763,16 @@ function CalendarBoard({
                       style={{ '--chip': eventCategoryColor(ev.category) } as React.CSSProperties}
                     >
                       {ev.title}
+                    </span>
+                  ))}
+                  {/* Money after the appointments, in whatever room is left. */}
+                  {dayMoney.slice(0, Math.max(0, maxChips - Math.min(dayEvents.length, maxChips))).map((m) => (
+                    <span
+                      key={`${m.billId}|${m.dueOn}`}
+                      className={`board-chip board-chip-money dir-${m.direction.toLowerCase()} status-${m.status.toLowerCase()}`}
+                    >
+                      {moneyIcon(m)}
+                      {m.amountSatang !== null ? shortBaht(m.amountSatang) : m.name}
                     </span>
                   ))}
                   {extra > 0 && <span className="board-more">+{extra}</span>}
@@ -780,6 +809,14 @@ function CalendarBoard({
       {events === null && <div className="board-loading">กำลังโหลด...</div>}
     </div>
   );
+}
+
+/** "24k" / "1.5k" / "850" — an amount that fits a 48px board cell. */
+function shortBaht(satang: number): string {
+  const b = satang / 100;
+  if (b >= 1_000_000) return `${(b / 1_000_000).toFixed(b % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (b >= 1000) return `${(b / 1000).toFixed(b % 1000 === 0 ? 0 : 1)}k`;
+  return String(Math.round(b));
 }
 
 /** The labelled facts of one appointment, shared by the board and the week view. */
@@ -894,11 +931,26 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   const [selected, setSelected] = useState<string>(initialDay ?? todayKey);
   const [calView, setCalView] = useState<'board' | 'week' | 'list'>('board');
   // One kind at a time — "what's on for school this month" — or everything.
+  // Appointment kinds are their category ("SCHOOL"); money ones start with $:
+  // "$OUT" all spending, "$IN" all income, "$cat:ประกัน" one money category.
   const [kind, setKind] = useState<string | null>(null);
+  // Money on the calendar can be switched off; the choice is kept on this phone.
+  const [showMoney, setShowMoney] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('calendar.showMoney') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const [moneyVersion, setMoneyVersion] = useState(0);
+  // What "＋ เพิ่ม" is adding: an appointment, money out or money in.
+  const [addKind, setAddKind] = useState<'event' | 'OUT' | 'IN' | null>(null);
+  const [editingBill, setEditingBill] = useState<BillItem | null>(null);
   const [monthData, setMonthData] = useState<{
     key: string;
     events: EventSummary[];
     holidays: Holiday[];
+    money: MoneyItem[];
   } | null>(null);
   const [reminders, setReminders] = useState<AgendaItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -918,20 +970,44 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
     const [from, to] = monthRange(monthKey);
     return api
       .events(from, to)
-      .then((r) => setMonthData({ key: monthKey, events: r.items, holidays: r.holidays }))
+      .then((r) => setMonthData({ key: monthKey, events: r.items, holidays: r.holidays, money: r.money ?? [] }))
       .catch((e: Error) => setError(e.message));
   };
 
-  // Bills, documents, medicine and the rest have a due date but no Event row,
-  // so they still come from the reminder queue — every kind except EVENT,
-  // which the board already shows on its real day.
+  // Documents, medicine and the rest have a due date but no Event row, so
+  // they still come from the reminder queue — every kind except EVENT and
+  // BILL, which the board already shows on their real day.
   const loadReminders = () =>
     api
       .agenda()
-      .then((r) => setReminders(r.items.filter((i) => i.kind !== 'EVENT')))
+      .then((r) => setReminders(r.items.filter((i) => i.kind !== 'EVENT' && i.kind !== 'BILL')))
       .catch((e: Error) => setError(e.message));
 
-  const reload = () => Promise.all([loadMonth(), loadReminders()]);
+  const reload = async () => {
+    setMoneyVersion((v) => v + 1);
+    await Promise.all([loadMonth(), loadReminders()]);
+  };
+
+  const toggleMoney = () => {
+    const next = !showMoney;
+    setShowMoney(next);
+    if (!next && kind?.startsWith('$')) setKind(null);
+    try {
+      localStorage.setItem('calendar.showMoney', next ? '1' : '0');
+    } catch {
+      // A phone that will not remember it just asks again next time.
+    }
+  };
+
+  const editBill = async (billId: string) => {
+    const { items } = await api.bills();
+    const bill = items.find((b) => b.id === billId);
+    if (bill) {
+      setEditingBill(bill);
+      setAddKind(null);
+      setEditingEvent(null);
+    }
+  };
 
   useEffect(() => {
     loadMonth();
@@ -954,12 +1030,34 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   };
 
   const monthEvents = current?.events ?? [];
-  const shownEvents = kind ? monthEvents.filter((e) => e.category === kind) : monthEvents;
+  const monthMoney = showMoney ? (current?.money ?? []) : [];
+  const moneyKind = kind?.startsWith('$') ?? false;
+  const shownEvents = !kind ? monthEvents : moneyKind ? [] : monthEvents.filter((e) => e.category === kind);
+  const shownMoney = !kind
+    ? monthMoney
+    : !moneyKind
+      ? []
+      : kind === '$OUT'
+        ? monthMoney.filter((m) => m.direction === 'OUT')
+        : kind === '$IN'
+          ? monthMoney.filter((m) => m.direction === 'IN')
+          : monthMoney.filter((m) => m.category === kind.slice(5));
   const kindCounts = EVENT_CATEGORIES.map((c) => ({
     c,
     n: new Set(monthEvents.filter((e) => e.category === c).map((e) => `${e.id}|${e.startAt}`)).size,
   })).filter((k) => k.n > 0);
+  // Money chips: spending, income, and each money category this month has.
+  const moneyChips = [
+    { key: '$OUT', label: '💰 ค่าใช้จ่าย', n: monthMoney.filter((m) => m.direction === 'OUT').length },
+    { key: '$IN', label: '💵 รายรับ', n: monthMoney.filter((m) => m.direction === 'IN').length },
+    ...[...new Set(monthMoney.map((m) => m.category).filter((c): c is string => Boolean(c)))].map((c) => ({
+      key: `$cat:${c}`,
+      label: c,
+      n: monthMoney.filter((m) => m.category === c).length,
+    })),
+  ].filter((chip) => chip.n > 0);
   const dayEvents = shownEvents.filter((e) => eventDayKeys(e, timezone).includes(selected));
+  const dayMoney = shownMoney.filter((m) => m.dueOn === selected);
   const dayReminders = reminders
     .filter((r) => dayKey(r.dueAt, timezone) === selected)
     .sort((a, b) => a.dueAt.localeCompare(b.dueAt));
@@ -988,7 +1086,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
       return next;
     });
 
-  const total = dayEvents.length + dayReminders.length;
+  const total = dayEvents.length + dayReminders.length + dayMoney.length;
 
   return (
     <div>
@@ -1016,8 +1114,18 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         )}
       </div>
 
-      {kindCounts.length > 1 && (
+      {(kindCounts.length + moneyChips.length > 1 || (current?.money.length ?? 0) > 0) && (
         <div className="kind-filter" role="group" aria-label="กรองตามหมวด">
+          {(current?.money.length ?? 0) > 0 && (
+            <button
+              className={`money-toggle${showMoney ? ' on' : ''}`}
+              aria-pressed={showMoney}
+              onClick={toggleMoney}
+              title="แสดง/ซ่อนค่าใช้จ่ายและรายรับในปฏิทิน"
+            >
+              {showMoney ? '💰 เงิน: แสดง' : '💰 เงิน: ซ่อน'}
+            </button>
+          )}
           <button className={kind === null ? 'active' : ''} aria-pressed={kind === null} onClick={() => setKind(null)}>
             ทั้งหมด
           </button>
@@ -1032,6 +1140,16 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
               {eventCategoryIcon(c)} {eventCategoryLabel(c)} <span className="kind-count">{n}</span>
             </button>
           ))}
+          {moneyChips.map((chip) => (
+            <button
+              key={chip.key}
+              className={`chip-money${kind === chip.key ? ' active' : ''}`}
+              aria-pressed={kind === chip.key}
+              onClick={() => setKind(kind === chip.key ? null : chip.key)}
+            >
+              {chip.label} <span className="kind-count">{chip.n}</span>
+            </button>
+          ))}
         </div>
       )}
 
@@ -1041,6 +1159,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
           todayKey={todayKey}
           selected={selected}
           events={current ? shownEvents : null}
+          money={shownMoney}
           holidays={holidays}
           timezone={timezone}
           onSelect={(key) => {
@@ -1067,6 +1186,8 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         />
       )}
 
+      {calView === 'board' && showMoney && <MonthMoneySummary monthKey={monthKey} refreshKey={moneyVersion} />}
+
       <div className="cal-detail" hidden={calView === 'list'}>
         <div className="cal-detail-heading">
           {selected === todayKey ? 'วันนี้' : thaiShortDayMonth(selected)}
@@ -1074,13 +1195,40 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
           {holidayName && <span className="cal-detail-holiday"> · {holidayName}</span>}
         </div>
 
-        {showAddEvent ? (
+        {editingBill ? (
+          <MoneyForm
+            editing={editingBill}
+            defaultDay={selected}
+            todayKey={todayKey}
+            onCancel={() => setEditingBill(null)}
+            onSaved={async () => {
+              setEditingBill(null);
+              await reload();
+            }}
+          />
+        ) : addKind === 'OUT' || addKind === 'IN' ? (
+          <MoneyForm
+            defaultDay={selected}
+            todayKey={todayKey}
+            direction={addKind}
+            onCancel={() => setAddKind(null)}
+            onSaved={async () => {
+              setAddKind(null);
+              if (!showMoney) toggleMoney();
+              await reload();
+            }}
+          />
+        ) : showAddEvent || addKind === 'event' ? (
           <AddEventForm
             selectedDay={selected}
             timezone={timezone}
-            onCancel={() => setShowAddEvent(false)}
+            onCancel={() => {
+              setShowAddEvent(false);
+              setAddKind(null);
+            }}
             onAdded={async () => {
               setShowAddEvent(false);
+              setAddKind(null);
               await reload();
             }}
           />
@@ -1099,13 +1247,21 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
             }}
           />
         ) : (
-          <button type="button" className="form-toggle cal-add-toggle" onClick={() => setShowAddEvent(true)}>
-            ＋ เพิ่มนัดหมาย
-          </button>
+          <div className="cal-add-choices" role="group" aria-label="เพิ่มในวันนี้">
+            <button type="button" className="form-toggle" onClick={() => setAddKind('event')}>
+              ＋ 📅 นัดหมาย
+            </button>
+            <button type="button" className="form-toggle" onClick={() => setAddKind('OUT')}>
+              ＋ 💰 ค่าใช้จ่าย
+            </button>
+            <button type="button" className="form-toggle" onClick={() => setAddKind('IN')}>
+              ＋ 💵 รายรับ
+            </button>
+          </div>
         )}
 
         {total === 0 ? (
-          <p className="empty">ไม่มีนัดวันนี้ครับ</p>
+          <p className="empty">ไม่มีนัดหรือค่าใช้จ่ายวันนี้ครับ</p>
         ) : (
           <ul className="list">
             {dayEvents.map((ev) => {
@@ -1166,6 +1322,8 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                 </li>
               );
             })}
+
+            <MoneyRows items={dayMoney} todayKey={todayKey} onChanged={reload} onEdit={editBill} />
 
             {dayReminders.map((item) => (
               <li key={item.id} className="agenda-item">
@@ -2114,6 +2272,7 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
       <DigestSettingsSection />
       <LeadTimesSection />
       <ExpensePlanSection />
+      <FundsSection />
       <BillsSection openAdd={focus === 'bills'} />
       <DocumentsSection openAdd={focus === 'documents'} />
       <MedicationsSection openAdd={focus === 'medications'} />
@@ -2707,16 +2866,38 @@ function ExpensePlanSection() {
         <p className="empty">ยังไม่มีค่าใช้จ่ายประจำ — ตั้งได้ที่หัวข้อด้านล่าง</p>
       ) : (
         <>
-          <div className="money-row">
-            <div className="money-tile">
-              <div className="money-label">รวมทั้งปี</div>
-              <div className="money-value">{baht(plan.totalSatang)}</div>
+          <div className="fin-tiles">
+            <div className="fin-tile">
+              <span>ค่าใช้จ่ายทั้งปี</span>
+              <strong>{baht(plan.totalSatang)}</strong>
             </div>
-            <div className="money-tile money-in">
-              <div className="money-label">ควรกันไว้เดือนละ</div>
-              <div className="money-value">{baht(plan.perMonthSatang)}</div>
+            <div className="fin-tile">
+              <span>เฉลี่ยต่อเดือน</span>
+              <strong>{baht(Math.round(plan.perMonthSatang / 100) * 100)}</strong>
             </div>
+            <div className="fin-tile fin-tile-key">
+              <span>ควรกันไว้เดือนละ</span>
+              <strong>{baht(plan.reserveSatang)}</strong>
+            </div>
+            {plan.incomeSatang > 0 && (
+              <div className="fin-tile">
+                <span>รายรับทั้งปี</span>
+                <strong className="money-plus">{baht(plan.incomeSatang)}</strong>
+              </div>
+            )}
           </div>
+          {plan.highestMonth !== null && (
+            <div className="muted fin-extremes">
+              สูงสุด {THAI_MONTH_SHORT[plan.highestMonth - 1]}{' '}
+              {baht(plan.months[plan.highestMonth - 1]?.dueSatang ?? 0)}
+              {plan.lowestMonth !== null && plan.lowestMonth !== plan.highestMonth && (
+                <>
+                  {' '}· ต่ำสุด {THAI_MONTH_SHORT[plan.lowestMonth - 1]} {baht(plan.months[plan.lowestMonth - 1]?.dueSatang ?? 0)}
+                </>
+              )}
+              {plan.lumpySatang > 0 && <> · ก้อนใหญ่ทั้งปี {baht(plan.lumpySatang)}</>}
+            </div>
+          )}
 
           <ul className="list plan-months">
             {plan.months.map((m) => {
@@ -2746,7 +2927,10 @@ function ExpensePlanSection() {
                             {item.estimated && <span className="muted"> (ประมาณ)</span>}
                           </span>
                           <span className="plan-item-amount">
-                            {item.paid && <span className="pill">จ่ายแล้ว</span>} {baht(item.amountSatang)}
+                            {item.status === 'PAID' && <span className="pill pill-paid">{item.direction === 'IN' ? 'ได้รับแล้ว' : 'จ่ายแล้ว'}</span>}
+                            {item.status === 'OVERDUE' && item.direction === 'OUT' && <span className="pill pill-warn">เลยกำหนด</span>}{' '}
+                            {item.direction === 'IN' ? '+' : ''}
+                            {baht(item.amountSatang)}
                           </span>
                         </li>
                       ))}
@@ -2788,256 +2972,102 @@ function ExpensePlanSection() {
   );
 }
 
-/** "ทุกวันที่ 5" / "ทุกปี 15 มี.ค." / "ทุก 6 เดือน วันที่ 5". */
-function billCycleLabel(bill: { dueDay: number; everyMonths: number; dueMonth: number | null }): string {
+/** "ทุกวันที่ 5" / "ทุกปี 15 มี.ค." / "ทุก 6 เดือน วันที่ 5" / "ครั้งเดียว 12 ต.ค." / "ทุกสัปดาห์". */
+function billCycleLabel(bill: BillItem): string {
+  if (bill.frequency === 'ONCE') return `ครั้งเดียว ${bill.startsOn ? thaiShortDayMonth(bill.startsOn) : ''}`.trim();
+  if (bill.frequency !== 'MONTHLY') return bill.frequencyLabel;
   if (bill.everyMonths <= 1) return `ทุกวันที่ ${bill.dueDay}`;
   if (bill.everyMonths === 12) return `ทุกปี ${bill.dueDay} ${THAI_MONTH_SHORT[(bill.dueMonth ?? 1) - 1]}`;
   return `ทุก ${bill.everyMonths} เดือน วันที่ ${bill.dueDay}`;
 }
 
-/** The cycles a household cost actually comes in. */
-const BILL_CYCLES: Array<[number, string]> = [
-  [1, 'ทุกเดือน'],
-  [3, 'ทุก 3 เดือน'],
-  [6, 'ทุก 6 เดือน'],
-  [12, 'ทุกปี'],
-];
-
 function BillsSection({ openAdd }: { openAdd?: boolean }) {
   const [bills, setBills] = useState<BillItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(openAdd ?? false);
-  const [name, setName] = useState('');
-  const [amount, setAmount] = useState('');
-  const [dueDay, setDueDay] = useState('');
-  const [everyMonths, setEveryMonths] = useState(1);
-  const [dueMonth, setDueMonth] = useState(1);
-  const [estimate, setEstimate] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState<BillItem | null>(null);
+  const todayKey = dayKey(new Date().toISOString(), Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   const load = () => api.bills().then((r) => setBills(r.items)).catch((e: Error) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
 
-  const startEdit = (bill: BillItem) => {
-    setEditingId(bill.id);
-    setName(bill.name);
-    setAmount(bill.amountSatang === null ? '' : String(bill.amountSatang / 100));
-    setEstimate(bill.estimateSatang === null ? '' : String(bill.estimateSatang / 100));
-    setDueDay(String(bill.dueDay));
-    setEveryMonths(bill.everyMonths);
-    setDueMonth(bill.dueMonth ?? 1);
-    setShowAdd(true);
-  };
-
-  const closeForm = () => {
-    setShowAdd(false);
-    setEditingId(null);
-    setName('');
-    setAmount('');
-    setEstimate('');
-    setDueDay('');
-    setEveryMonths(1);
-    setDueMonth(1);
-  };
-
-  const add = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const day = Number(dueDay);
-    if (!name.trim() || !Number.isInteger(day) || day < 1 || day > 31) return;
-    const amountBaht = Number(amount);
-    const hasAmount = Number.isFinite(amountBaht) && amountBaht > 0;
-    const estimateBaht = Number(estimate);
-    const hasEstimate = Number.isFinite(estimateBaht) && estimateBaht > 0;
-    const cycle = { everyMonths, ...(everyMonths > 1 ? { dueMonth } : {}) };
-
-    setSaving(true);
-    try {
-      if (editingId) {
-        // null clears a fixed amount, for a bill that varies month to month.
-        await api.updateBill(editingId, {
-          name: name.trim(),
-          dueDay: day,
-          amountBaht: hasAmount ? amountBaht : null,
-          estimateBaht: hasEstimate ? estimateBaht : null,
-          ...cycle,
-          ...(everyMonths === 1 ? { dueMonth: null } : {}),
-        });
-      } else {
-        await api.addBill({
-          name: name.trim(),
-          dueDay: day,
-          ...(hasAmount ? { amountBaht } : {}),
-          ...(hasEstimate ? { estimateBaht } : {}),
-          ...cycle,
-        });
-      }
-      closeForm();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   if (error) return <p className="error">{error}</p>;
+
+  const close = async () => {
+    setShowAdd(false);
+    setEditing(null);
+    await load();
+  };
 
   return (
     <div className="dash-section" id="section-bills">
-      <div className="dash-section-heading">🧾 ค่าใช้จ่ายประจำ</div>
+      <div className="dash-section-heading">🧾 ค่าใช้จ่าย/รายรับประจำ</div>
       {!bills ? (
         <p className="loading">กำลังโหลด...</p>
       ) : bills.length === 0 ? (
         <p className="empty">
-          ยังไม่มีค่าใช้จ่ายประจำ — พิมพ์ "ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค." ในแชทได้เลย
+          ยังไม่มีรายการ — เพิ่มจากปฏิทินได้ (กดวันที่ → ＋ ค่าใช้จ่าย) หรือพิมพ์ "ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค." ในแชท
         </p>
       ) : (
         <ul className="list">
-          {bills.map((bill) => (
-            <li key={bill.id} className="finance-item finance-item-stacked">
-              <div className="finance-item-row">
-                <div className="finance-item-main">
-                  <span className="finance-icon">🧾</span>
-                  <div>
-                    <div>{bill.name}</div>
-                    <div className="muted">
-                      {billCycleLabel(bill)} ·{' '}
-                      {bill.amountSatang !== null
-                        ? `${baht(bill.amountSatang)} บาท`
-                        : bill.estimateSatang !== null
-                          ? `ประมาณ ${baht(bill.estimateSatang)} บาท`
-                          : 'ยอดตามบิล'}
+          {bills.map((bill) =>
+            editing?.id === bill.id ? (
+              <li key={bill.id} className="finance-item finance-item-stacked">
+                <MoneyForm editing={bill} defaultDay={todayKey} todayKey={todayKey} onCancel={() => setEditing(null)} onSaved={close} />
+              </li>
+            ) : (
+              <li key={bill.id} className="finance-item finance-item-stacked">
+                <div className="finance-item-row">
+                  <div className="finance-item-main">
+                    <span className="finance-icon">{bill.direction === 'IN' ? '💵' : '💰'}</span>
+                    <div>
+                      <div>
+                        {bill.name}
+                        {bill.category && <span className="muted"> · {bill.category}</span>}
+                      </div>
+                      <div className="muted">
+                        {billCycleLabel(bill)} ·{' '}
+                        {bill.amountSatang !== null
+                          ? `${baht(bill.amountSatang)} บาท`
+                          : bill.estimateSatang !== null
+                            ? `ประมาณ ${baht(bill.estimateSatang)} บาท`
+                            : 'ยอดตามบิล'}
+                        {bill.amountChanges.length > 0 && ` · มียอดเปลี่ยน ${bill.amountChanges.length} ครั้ง`}
+                      </div>
                     </div>
                   </div>
+                  {!bill.active && <span className="pill pill-muted">ปิดอยู่</span>}
                 </div>
-                {!bill.active && <span className="pill pill-muted">ปิดอยู่</span>}
-              </div>
-              <RowActions
-                extra={{
-                  label: bill.active ? 'ปิดเตือน' : 'เปิดเตือน',
-                  onClick: async () => {
-                    await api.updateBill(bill.id, { active: !bill.active });
+                <RowActions
+                  extra={{
+                    label: bill.active ? 'ปิดไว้ก่อน' : 'เปิดใช้',
+                    onClick: async () => {
+                      await api.updateBill(bill.id, { active: !bill.active });
+                      await load();
+                    },
+                  }}
+                  onEdit={() => {
+                    setEditing(bill);
+                    setShowAdd(false);
+                  }}
+                  onDelete={async () => {
+                    await api.deleteBill(bill.id);
                     await load();
-                  },
-                }}
-                onEdit={() => startEdit(bill)}
-                onDelete={async () => {
-                  await api.deleteBill(bill.id);
-                  await load();
-                }}
-              />
-            </li>
-          ))}
+                  }}
+                />
+              </li>
+            ),
+          )}
         </ul>
       )}
 
       {showAdd ? (
-        <form className="entry-form" onSubmit={add}>
-          <div className="field">
-            <label htmlFor="bill-name">ชื่อบิล</label>
-            <input
-              id="bill-name"
-              type="text"
-              placeholder="เช่น ค่าไฟ"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              autoFocus
-            />
-          </div>
-          <div className="field-row">
-            <div className="field">
-              <label htmlFor="bill-amount">
-                ยอด (บาท) <span className="optional">(ไม่บังคับ)</span>
-              </label>
-              <input
-                id="bill-amount"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                placeholder="ว่างไว้ถ้ายอดไม่คงที่"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="bill-dueday">ครบกำหนดทุกวันที่</label>
-              <input
-                id="bill-dueday"
-                type="number"
-                inputMode="numeric"
-                min="1"
-                max="31"
-                placeholder="1-31"
-                value={dueDay}
-                onChange={(e) => setDueDay(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-
-          <div className="field-row">
-            <div className="field">
-              <label htmlFor="bill-cycle">มาบ่อยแค่ไหน</label>
-              <select
-                id="bill-cycle"
-                value={everyMonths}
-                onChange={(e) => setEveryMonths(Number(e.target.value))}
-              >
-                {BILL_CYCLES.map(([months, label]) => (
-                  <option key={months} value={months}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {everyMonths > 1 && (
-              <div className="field">
-                <label htmlFor="bill-month">เริ่มเดือน</label>
-                <select id="bill-month" value={dueMonth} onChange={(e) => setDueMonth(Number(e.target.value))}>
-                  {THAI_MONTH_SHORT.map((label, i) => (
-                    <option key={label} value={i + 1}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          {!amount && (
-            <div className="field">
-              <label htmlFor="bill-estimate">
-                ยอดประมาณต่อครั้ง (บาท) <span className="optional">(ไม่บังคับ)</span>
-              </label>
-              <input
-                id="bill-estimate"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                placeholder="เช่น 2500 — ใช้คำนวณประมาณการ"
-                value={estimate}
-                onChange={(e) => setEstimate(e.target.value)}
-              />
-            </div>
-          )}
-
-          <div className="field-row">
-            <button type="button" className="form-toggle" onClick={closeForm}>
-              ยกเลิก
-            </button>
-            <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งค่าใช้จ่ายประจำ'}
-            </button>
-          </div>
-        </form>
+        <MoneyForm defaultDay={todayKey} todayKey={todayKey} onCancel={() => setShowAdd(false)} onSaved={close} />
       ) : (
         <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
-          ＋ ตั้งค่าใช้จ่ายประจำ
+          ＋ เพิ่มค่าใช้จ่าย/รายรับประจำ
         </button>
       )}
     </div>

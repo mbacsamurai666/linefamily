@@ -14,6 +14,7 @@ import {
   generateTaskJobs,
 } from '../reminders/generate.js';
 import { THAI_MONTHS } from '../line/format.js';
+import { toDateColumn } from './billOccurrences.js';
 import { familyLeadTimes } from './leadTimes.js';
 
 /**
@@ -32,6 +33,8 @@ export interface PersistContext {
 
 export interface PersistResult {
   summary: string;
+  /** The row just created, for callers that go on to show or open it. */
+  recordId?: string;
   /**
    * Set when the row just saved can still take a photo — the caller offers to
    * keep one, and files whatever arrives next against this id.
@@ -232,11 +235,37 @@ async function persistBill(
   draft: Extract<Draft, { kind: 'bill' }>,
   ctx: PersistContext,
 ): Promise<PersistResult> {
+  const direction = draft.direction ?? 'OUT';
+  // Filed like an expense: the category is made the first time it is named.
+  const categoryId = draft.categoryName
+    ? (
+        await ctx.prisma.category.upsert({
+          where: { familyId_name_kind: { familyId: ctx.familyId, name: draft.categoryName, kind: direction } },
+          create: { familyId: ctx.familyId, name: draft.categoryName, kind: direction },
+          update: {},
+        })
+      ).id
+    : undefined;
+
   const bill = await ctx.prisma.bill.create({
     data: {
       familyId: ctx.familyId,
       name: draft.name,
       dueDay: draft.dueDay,
+      direction,
+      ...(draft.frequency !== undefined ? { frequency: draft.frequency } : {}),
+      ...(draft.interval !== undefined ? { interval: draft.interval } : {}),
+      ...(draft.startsOn !== undefined ? { startsOn: toDateColumn(draft.startsOn) } : {}),
+      ...(draft.endsOn !== undefined ? { endsOn: toDateColumn(draft.endsOn) } : {}),
+      ...(draft.note !== undefined ? { note: draft.note } : {}),
+      ...(categoryId !== undefined ? { categoryId } : {}),
+      ...(draft.amountChanges && draft.amountChanges.length > 0
+        ? {
+            amounts: {
+              create: draft.amountChanges.map((c) => ({ effectiveFrom: toDateColumn(c.effectiveFrom), amount: c.amount })),
+            },
+          }
+        : {}),
       ...(draft.everyMonths !== undefined ? { everyMonths: draft.everyMonths } : {}),
       ...(draft.dueMonth !== undefined ? { dueMonth: draft.dueMonth } : {}),
       ...(draft.estimateAmount !== undefined ? { estimateAmount: draft.estimateAmount } : {}),
@@ -249,12 +278,19 @@ async function persistBill(
 
   const every = draft.everyMonths ?? 1;
   const when =
-    every === 1
-      ? `ทุกวันที่ ${draft.dueDay}`
-      : every === 12
-        ? `ทุกปี ${draft.dueDay} ${THAI_MONTHS[(draft.dueMonth ?? 1) - 1]}`
-        : `ทุก ${every} เดือน วันที่ ${draft.dueDay}`;
-  return { summary: `ตั้งค่าใช้จ่ายประจำ "${draft.name}" ${when} แล้ว` };
+    draft.frequency === 'ONCE'
+      ? `วันที่ ${draft.startsOn?.toFormat('d')} ${THAI_MONTHS[(draft.startsOn?.month ?? 1) - 1]}`
+      : draft.frequency === 'DAILY'
+        ? (draft.interval ?? 1) > 1 ? `ทุก ${draft.interval} วัน` : 'ทุกวัน'
+        : draft.frequency === 'WEEKLY'
+          ? (draft.interval ?? 1) > 1 ? `ทุก ${draft.interval} สัปดาห์` : 'ทุกสัปดาห์'
+          : every === 1
+            ? `ทุกวันที่ ${draft.dueDay}`
+            : every === 12
+              ? `ทุกปี ${draft.dueDay} ${THAI_MONTHS[(draft.dueMonth ?? 1) - 1]}`
+              : `ทุก ${every} เดือน วันที่ ${draft.dueDay}`;
+  const what = direction === 'IN' ? 'รายรับประจำ' : 'ค่าใช้จ่ายประจำ';
+  return { summary: `ตั้ง${what} "${draft.name}" ${when} แล้ว`, recordId: bill.id };
 }
 
 async function persistDocument(

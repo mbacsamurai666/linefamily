@@ -1,8 +1,14 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
-import { formatRelativeDay, formatThaiDateTime, formatThaiSpan } from '../line/format.js';
-import { fallsDue } from '../modules/expensePlan.js';
+import { THAI_MONTHS, formatRelativeDay, formatThaiDateTime, formatThaiSpan } from '../line/format.js';
+import {
+  amountOn,
+  billOccurrences,
+  dateOnly,
+  isLumpy,
+  toDateColumn,
+} from '../modules/billOccurrences.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import { formatSatang } from '../thai/number.js';
 import { recurrenceLabel } from '../thai/recurrence.js';
@@ -192,11 +198,15 @@ export async function generateBillJobs(
   now: DateTime,
   monthsAhead = 3,
 ): Promise<void> {
-  const bill = await prisma.bill.findUnique({ where: { id: billId } });
+  const bill = await prisma.bill.findUnique({
+    where: { id: billId },
+    include: { amounts: { select: { effectiveFrom: true, amount: true } } },
+  });
   if (!bill) return;
   // Switched off: retire whatever was still queued rather than leaving it to
-  // fire for a bill nobody is tracking any more.
-  if (!bill.active) return replaceJobs(prisma, 'BILL', billId, []);
+  // fire for a bill nobody is tracking any more. Money coming in needs no
+  // reminding — a salary arrives whether or not anyone is told.
+  if (!bill.active || bill.direction === 'IN') return replaceJobs(prisma, 'BILL', billId, []);
 
   const zone = (
     await prisma.family.findUnique({
@@ -205,19 +215,29 @@ export async function generateBillJobs(
     })
   )?.timezone ?? 'Asia/Bangkok';
 
+  // A yearly premium is looked for a year ahead; a daily or weekly cost only
+  // a fortnight, or the queue fills with reminders nobody will read yet.
+  const local = now.setZone(zone);
+  const horizon =
+    bill.frequency === 'DAILY' || bill.frequency === 'WEEKLY'
+      ? local.plus({ days: 14 })
+      : local.plus({ months: Math.max(monthsAhead, isLumpy(bill) ? 13 : 0) });
+
+  // A due date already paid for is not reminded about again.
+  const paid = new Set(
+    (
+      await prisma.transaction.findMany({
+        where: { billId, billDueOn: { not: null, gte: toDateColumn(local.startOf('day')) } },
+        select: { billDueOn: true },
+      })
+    ).map((t) => dateOnly(t.billDueOn as Date, zone).toISODate()),
+  );
+
   const jobs: Array<{ familyId: string; dueAt: Date; text: string; at: Date }> = [];
-
-  // A yearly premium has to be looked for further ahead than a monthly bill.
-  const horizon = Math.max(monthsAhead, bill.everyMonths + 1);
-  for (let i = 0; i < horizon; i++) {
-    const month = now.setZone(zone).plus({ months: i });
-    // Every third or twelfth month for a premium; every month for a bill.
-    if (!fallsDue(month.month, bill.everyMonths, bill.dueMonth)) continue;
-    // A bill "due on the 31st" still has to land in February.
-    const day = Math.min(bill.dueDay, month.daysInMonth ?? 28);
-    const due = month.set({ day, hour: 9, minute: 0, second: 0, millisecond: 0 });
-
-    const amount = bill.amount !== null ? `${formatSatang(bill.amount)} บาท` : 'ยอดตามบิล';
+  for (const occ of billOccurrences(bill, local.startOf('day'), horizon, zone)) {
+    if (paid.has(occ.dueOn.toISODate())) continue;
+    const due = occ.dueOn.set({ hour: 9 });
+    const amount = occ.amount !== null ? `${formatSatang(occ.amount)} บาท${occ.estimated ? ' (ประมาณ)' : ''}` : 'ยอดตามบิล';
 
     for (const dueAt of futureOnly(
       bill.reminderOffsets.map((min) => due.minus({ minutes: min })),
@@ -227,7 +247,7 @@ export async function generateBillJobs(
         familyId: bill.familyId,
         dueAt: dueAt.toJSDate(),
         at: due.toJSDate(),
-        text: `[บิล] ${bill.name} ${amount} — ครบกำหนด ${due.toFormat('d MMM')} (${formatRelativeDay(due, dueAt)})`,
+        text: `[บิล] ${bill.name} ${amount} — ครบกำหนด ${due.day} ${THAI_MONTHS[due.month - 1]} (${formatRelativeDay(due, dueAt)})`,
       });
     }
   }
@@ -236,71 +256,154 @@ export async function generateBillJobs(
 }
 
 export interface BillPaidResult {
-  /** Satang actually recorded as an expense, or null when the bill has no set amount. */
+  /** Satang actually recorded, or null when nothing was (no amount known, or bookkeeping off). */
   amountSatang: number | null;
+  /** The due date this payment settled, "YYYY-MM-DD". */
+  dueOn: string | null;
+  /** Already settled before: nothing new was recorded. */
+  alreadyPaid: boolean;
+  /** Taken out of the bill's reserve pot to pay it. */
+  fromReserveSatang: number;
+  transactionId: string | null;
+}
+
+export interface PayBillOptions {
+  /** Which due date is being paid; the oldest one outstanding when omitted. */
+  dueOn?: DateTime;
+  /** What was really paid, when it differs from the plan — or the plan has none. */
+  amountSatang?: number;
+  /** When it was paid; now when omitted. */
+  paidOn?: DateTime;
+  note?: string;
+  memberId?: string | null;
 }
 
 /**
- * "จ่ายบิลแล้ว" — books the expense (that is what Bill.autoCreateTx is for)
- * and retires only this cycle's reminders. The bill itself stays active, so
- * next month's reminders are untouched.
+ * Settles one due date of a bill: records what was paid against exactly that
+ * date, takes it out of the bill's reserve pot when there is money in it, and
+ * retires the reminders for it. The bill itself stays, for the next one.
+ *
+ * Paying the same due date twice records nothing the second time.
  */
 export async function markBillPaid(
   prisma: PrismaClient,
   billId: string,
   now: DateTime,
+  options: PayBillOptions = {},
 ): Promise<BillPaidResult | null> {
-  const bill = await prisma.bill.findUnique({ where: { id: billId } });
+  const bill = await prisma.bill.findUnique({
+    where: { id: billId },
+    include: { amounts: { select: { effectiveFrom: true, amount: true } } },
+  });
   if (!bill) return null;
 
   const zone = (
     await prisma.family.findUnique({ where: { id: bill.familyId }, select: { timezone: true } })
   )?.timezone ?? 'Asia/Bangkok';
+  const today = now.setZone(zone).startOf('day');
 
-  const local = now.setZone(zone);
-  let due = local.set({
-    day: Math.min(bill.dueDay, local.daysInMonth ?? 28),
-    hour: 9,
-    minute: 0,
-    second: 0,
-    millisecond: 0,
-  });
-  // Paying after this month's date settles the cycle that is already running,
-  // not the one that has not come round yet.
-  if (due < local.minus({ days: 7 })) {
-    const next = local.plus({ months: 1 });
-    due = next.set({ day: Math.min(bill.dueDay, next.daysInMonth ?? 28), hour: 9 });
+  const settled = new Set(
+    (
+      await prisma.transaction.findMany({ where: { billId, billDueOn: { not: null } }, select: { billDueOn: true } })
+    ).map((t) => dateOnly(t.billDueOn as Date, zone).toISODate()),
+  );
+
+  let dueOn: DateTime | null = options.dueOn?.setZone(zone).startOf('day') ?? null;
+  if (!dueOn) {
+    // The oldest one still outstanding since the bill was entered, looking a
+    // little ahead too — people pay the coming bill a few days early.
+    const trackedFrom = bill.startsOn
+      ? dateOnly(bill.startsOn, zone)
+      : DateTime.min(DateTime.fromJSDate(bill.createdAt, { zone }).startOf('day'), today);
+    const from = DateTime.max(trackedFrom, today.minus({ days: 45 }));
+    const next = billOccurrences(bill, from, today.plus({ days: 45 }), zone).find(
+      (o) => !settled.has(o.dueOn.toISODate()),
+    );
+    dueOn = next?.dueOn ?? null;
   }
 
-  let amountSatang: number | null = null;
-  if (bill.autoCreateTx && bill.amount !== null) {
-    await prisma.transaction.create({
+  const empty = { amountSatang: null, dueOn: dueOn?.toISODate() ?? null, fromReserveSatang: 0, transactionId: null };
+  if (dueOn && settled.has(dueOn.toISODate())) return { ...empty, alreadyPaid: true };
+
+  const planned = dueOn ? amountOn(bill, dueOn, zone).amount : bill.amount;
+  const amount = options.amountSatang ?? planned;
+
+  let transactionId: string | null = null;
+  let fromReserve = 0;
+  if (bill.autoCreateTx && amount !== null && amount >= 0) {
+    const tx = await prisma.transaction.create({
       data: {
         familyId: bill.familyId,
-        amount: bill.amount,
-        direction: 'OUT',
-        occurredAt: now.toJSDate(),
+        amount,
+        direction: bill.direction,
+        occurredAt: (options.paidOn ?? now).toJSDate(),
         billId: bill.id,
-        note: bill.name,
+        ...(dueOn ? { billDueOn: toDateColumn(dueOn) } : {}),
+        note: options.note ?? bill.name,
         ...(bill.categoryId !== null ? { categoryId: bill.categoryId } : {}),
+        ...(options.memberId ? { paidById: options.memberId } : {}),
       },
     });
-    amountSatang = bill.amount;
+    transactionId = tx.id;
 
-    try {
-      if (bill.categoryId) await checkBudgetAlert(prisma, bill.familyId, bill.categoryId, now);
-      await generateMonthSummaryJob(prisma, bill.familyId, now);
-    } catch {
-      // Reporting must not fail a payment that was already recorded.
+    // Money put aside for this bill pays for it — once, from the pot, not
+    // again out of the month.
+    if (bill.direction === 'OUT' && isLumpy(bill)) {
+      const pot = await prisma.reserveEntry.aggregate({ where: { billId }, _sum: { amount: true } });
+      fromReserve = Math.min(Math.max(0, pot._sum.amount ?? 0), amount);
+      if (fromReserve > 0) {
+        await prisma.reserveEntry.create({
+          data: { familyId: bill.familyId, billId, amount: -fromReserve, note: `จ่าย${bill.name}`, transactionId: tx.id },
+        });
+      }
+    }
+
+    if (bill.direction === 'OUT') {
+      try {
+        if (bill.categoryId) await checkBudgetAlert(prisma, bill.familyId, bill.categoryId, now);
+        await generateMonthSummaryJob(prisma, bill.familyId, now);
+      } catch {
+        // Reporting must not fail a payment that was already recorded.
+      }
     }
   }
 
-  await prisma.notificationJob.updateMany({
-    where: { kind: 'BILL', refId: billId, status: 'PENDING', dueAt: { lte: due.toJSDate() } },
-    data: { status: 'CANCELLED' },
-  });
+  if (dueOn) {
+    await prisma.notificationJob.updateMany({
+      where: { kind: 'BILL', refId: billId, status: 'PENDING', dueAt: { lte: dueOn.set({ hour: 9 }).toJSDate() } },
+      data: { status: 'CANCELLED' },
+    });
+  }
 
-  return { amountSatang };
+  return {
+    amountSatang: transactionId ? amount : null,
+    dueOn: dueOn?.toISODate() ?? null,
+    alreadyPaid: false,
+    fromReserveSatang: fromReserve,
+    transactionId,
+  };
+}
+
+/**
+ * Takes back a payment made against a due date by mistake: the record goes,
+ * whatever it took from the reserve pot goes back, and the reminders return.
+ */
+export async function unmarkBillPaid(
+  prisma: PrismaClient,
+  billId: string,
+  dueOn: DateTime,
+  now: DateTime,
+): Promise<boolean> {
+  const tx = await prisma.transaction.findFirst({
+    where: { billId, billDueOn: toDateColumn(dueOn) },
+    select: { id: true },
+  });
+  if (!tx) return false;
+  // The draw from the pot is tied to the payment; deleting both restores the pot.
+  await prisma.reserveEntry.deleteMany({ where: { transactionId: tx.id } });
+  await prisma.transaction.delete({ where: { id: tx.id } });
+  await generateBillJobs(prisma, billId, now);
+  return true;
 }
 
 export async function generateDocumentJobs(

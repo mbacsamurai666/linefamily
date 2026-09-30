@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { computeNetBalances, settleUp } from './debts.js';
 import { computeExpensePlan } from './expensePlan.js';
+import { computeFunds, fundTotals, moneyItems } from './money.js';
 import { computeExpenseSummary } from './expenseSummary.js';
 import { announcedHolidaysKnown } from '../thai/holidays.js';
 import { computeHealth } from './health.js';
@@ -72,9 +73,12 @@ const SET_CONDITIONS = /^โรคประจำตัว\s+(.+)$/;
 const SET_BUDGET = /^ตั้งงบ\s+(.+?)\s+([\d,๐-๙]+(?:\.\d{1,2})?)\s*(?:บาท)?(?:\s*\/\s*เดือน)?$/;
 const DEBT_SUMMARY = /^(?:สรุปหนี้|ใครติดใคร|สรุปยอดหักลบ)$/;
 /** "ประมาณการ" / "ประมาณการปีนี้" / "ค่าใช้จ่ายประจำปี" — the year ahead. */
-const EXPENSE_PLAN = /^(?:ประมาณการ(?:ค่าใช้จ่าย)?(?:ปีนี้|ปีหน้า)?|ค่าใช้จ่ายประจำปี)$/;
+const EXPENSE_PLAN = /^(?:ประมาณการ(?:ค่าใช้จ่าย)?(?:ปีนี้|ปีหน้า)?|ค่าใช้จ่ายประจำปี|ทั้งปีต้องใช้เงินเท่าไ(?:หร่|ร))$/;
 /** "เดือนนี้ต้องจ่ายอะไรบ้าง" — the month's own commitments. */
-const MONTH_DUE = /^(?:เดือนนี้ต้องจ่ายอะไร(?:บ้าง)?|ต้องจ่ายอะไรบ้าง|ค่าใช้จ่ายเดือนนี้)$/;
+const MONTH_DUE = /^(?:เดือนนี้ต้องจ่ายอะไร(?:บ้าง)?|ต้องจ่ายอะไรบ้าง|ค่าใช้จ่ายเดือนนี้|เดือนนี้ต้องใช้เงินเท่าไ(?:หร่|ร))$/;
+const NEXT_MONTH_DUE = /^(?:เดือนหน้าต้องจ่ายอะไร(?:บ้าง)?|ค่าใช้จ่ายเดือนหน้า|เดือนหน้าต้องใช้เงินเท่าไ(?:หร่|ร))$/;
+/** "กองเงิน" / "ต้องกันเงินเท่าไหร่" — the reserve pots. */
+const FUNDS = /^(?:กองเงิน|เงินที่ต้องกัน|ต้องกันเงิน(?:เดือนละ)?เท่าไ(?:หร่|ร))$/;
 const LOAN_SUMMARY = /^สรุปเงินกู้$/;
 const ASSET_SUMMARY = /^สรุปทรัพย์สิน$/;
 const DEPOSIT_SUMMARY = /^สรุปเงินฝาก$/;
@@ -108,6 +112,8 @@ export function classifyCommand(text: string): 'read' | 'act' | null {
     DEBT_SUMMARY,
     EXPENSE_PLAN,
     MONTH_DUE,
+    NEXT_MONTH_DUE,
+    FUNDS,
     LOAN_SUMMARY,
     ASSET_SUMMARY,
     DEPOSIT_SUMMARY,
@@ -175,6 +181,8 @@ export async function tryDirectCommand(
   if (DEBT_SUMMARY.test(text)) return handleDebtSummary(ctx);
   if (EXPENSE_PLAN.test(text)) return handleExpensePlan(ctx, text.includes('ปีหน้า'));
   if (MONTH_DUE.test(text)) return handleMonthDue(ctx);
+  if (NEXT_MONTH_DUE.test(text)) return handleMonthDue(ctx, 1);
+  if (FUNDS.test(text)) return handleFunds(ctx);
   if (LOAN_SUMMARY.test(text)) return handleLoanSummary(ctx);
   if (ASSET_SUMMARY.test(text)) return handleAssetSummary(ctx);
   if (DEPOSIT_SUMMARY.test(text)) return handleDepositSummary(ctx);
@@ -524,7 +532,7 @@ async function handleExpensePlan(ctx: CommandContext, nextYear: boolean): Promis
   const plan = await computeExpensePlan(ctx.prisma, ctx.familyId, year, zone, ctx.now);
 
   // Costs with no amount yet are still worth saying out loud.
-  if (plan.totalSatang === 0 && plan.missingAmount.length === 0) {
+  if (plan.totalSatang === 0 && plan.missingAmount.length === 0 && plan.incomeSatang === 0) {
     return {
       reply:
         'ยังไม่มีค่าใช้จ่ายประจำให้ประมาณการครับ\nตั้งได้เช่น: ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค.',
@@ -535,13 +543,23 @@ async function handleExpensePlan(ctx: CommandContext, nextYear: boolean): Promis
   const lines = [
     `📊 ประมาณการค่าใช้จ่ายประจำ ปี ${year + 543}`,
     `รวมทั้งปี ${formatSatang(plan.totalSatang)} บาท`,
-    `ควรกันไว้เดือนละ ${formatSatang(plan.perMonthSatang)} บาท`,
+    `เฉลี่ยเดือนละ ${formatSatang(plan.perMonthSatang)} บาท`,
+    // The pot: twelfths of the bills paid in one go, so their months are already covered.
+    `ควรกันไว้เดือนละ ${formatSatang(plan.reserveSatang)} บาท (สำหรับรายการก้อนใหญ่)`,
+    ...(plan.incomeSatang > 0 ? [`รายรับประจำทั้งปี ${formatSatang(plan.incomeSatang)} บาท`] : []),
     '',
     'เดือนที่หนักที่สุด',
     ...heaviest
       .filter((m) => m.dueSatang > 0)
-      .map((m) => `• ${THAI_MONTHS[m.month - 1]} ${formatSatang(m.dueSatang)} บาท (${m.items.length} รายการ)`),
+      .map(
+        (m) =>
+          `• ${THAI_MONTHS[m.month - 1]} ${formatSatang(m.dueSatang)} บาท (${m.items.filter((i) => i.direction === 'OUT').length} รายการ)`,
+      ),
   ];
+  if (plan.lowestMonth !== null && plan.lowestMonth !== plan.highestMonth) {
+    const low = plan.months[plan.lowestMonth - 1];
+    lines.push(`เบาที่สุด ${THAI_MONTHS[plan.lowestMonth - 1]} ${formatSatang(low?.dueSatang ?? 0)} บาท`);
+  }
 
   if (plan.byCategory.length > 0) {
     lines.push('', 'แยกตามหมวด');
@@ -556,30 +574,60 @@ async function handleExpensePlan(ctx: CommandContext, nextYear: boolean): Promis
   return { reply: lines.join('\n') };
 }
 
-/** "เดือนนี้ต้องจ่ายอะไรบ้าง" — what is still owed this month, and what is done. */
-async function handleMonthDue(ctx: CommandContext): Promise<CommandResult> {
+const STATUS_MARK: Record<string, string> = { PAID: '✅', OVERDUE: '⚠️', UNPAID: '•', UNTRACKED: '•' };
+
+/**
+ * "เดือนนี้ต้องจ่ายอะไรบ้าง" / "เดือนหน้าต้องจ่ายอะไรบ้าง" — a month's money
+ * out, with what is settled, what is late and what is still ahead.
+ */
+async function handleMonthDue(ctx: CommandContext, monthsAhead = 0): Promise<CommandResult> {
   const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
-  const plan = await computeExpensePlan(ctx.prisma, ctx.familyId, ctx.now.year, zone, ctx.now);
-  const month = plan.months[ctx.now.month - 1];
+  const start = ctx.now.setZone(zone).startOf('month').plus({ months: monthsAhead });
+  const label = `${monthsAhead === 0 ? 'เดือนนี้' : 'เดือนหน้า'} (${THAI_MONTHS[start.month - 1]})`;
+  const items = (await moneyItems(ctx.prisma, ctx.familyId, start, start.endOf('month'), zone, ctx.now)).filter(
+    (i) => i.direction === 'OUT',
+  );
 
-  if (!month || month.items.length === 0) {
-    return { reply: `เดือน${THAI_MONTHS[ctx.now.month - 1]}ไม่มีค่าใช้จ่ายประจำครับ` };
-  }
+  if (items.length === 0) return { reply: `${label}ไม่มีค่าใช้จ่ายประจำครับ` };
 
-  const left = month.items.filter((i) => !i.paid);
-  const leftSatang = left.reduce((sum, i) => sum + i.amountSatang, 0);
+  const sum = (list: typeof items) => list.reduce((s, i) => s + (i.amountSatang ?? 0), 0);
+  const left = items.filter((i) => i.status === 'UNPAID' || i.status === 'OVERDUE');
+  const late = items.filter((i) => i.status === 'OVERDUE');
   const lines = [
-    `💸 ค่าใช้จ่ายประจำเดือน${THAI_MONTHS[ctx.now.month - 1]} ${formatSatang(month.dueSatang)} บาท`,
-    ...month.items.map(
+    `💸 ค่าใช้จ่ายประจำ${label} ${formatSatang(sum(items))} บาท`,
+    ...items.map(
       (i) =>
-        `${i.paid ? '✅' : '•'} วันที่ ${i.day} ${i.name} ${formatSatang(i.amountSatang)} บาท${
-          i.estimated ? ' (ประมาณ)' : ''
-        }`,
+        `${STATUS_MARK[i.status]} วันที่ ${Number(i.dueOn.slice(8, 10))} ${i.name} ${
+          i.amountSatang === null ? 'ยอดตามบิล' : `${formatSatang(i.amountSatang)} บาท`
+        }${i.estimated ? ' (ประมาณ)' : ''}`,
     ),
   ];
-  if (left.length > 0) lines.push('', `ยังไม่จ่าย ${left.length} รายการ รวม ${formatSatang(leftSatang)} บาท`);
+  if (late.length > 0) lines.push('', `⚠️ เลยกำหนด ${late.length} รายการ รวม ${formatSatang(sum(late))} บาท`);
+  if (left.length > 0) lines.push('', `ยังไม่จ่าย ${left.length} รายการ รวม ${formatSatang(sum(left))} บาท`);
   else lines.push('', 'จ่ายครบแล้วครับ 🎉');
 
+  return { reply: lines.join('\n') };
+}
+
+/** "กองเงิน" — each pot's target, what is in it, and what it still needs. */
+async function handleFunds(ctx: CommandContext): Promise<CommandResult> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const funds = await computeFunds(ctx.prisma, ctx.familyId, zone, ctx.now);
+  if (funds.length === 0) {
+    return { reply: 'ยังไม่มีค่าใช้จ่ายก้อนใหญ่ที่ต้องกันเงินครับ (เช่น รายปี ทุก 6 เดือน หรือครั้งเดียว)' };
+  }
+  const totals = fundTotals(funds);
+  const lines = [
+    `🏦 กองเงิน — ต้องกันเดือนละ ${formatSatang(totals.monthlyRequiredSatang)} บาท`,
+    `เป้ารวม ${formatSatang(totals.requiredSatang)} · เก็บแล้ว ${formatSatang(totals.reservedSatang)} · ขาด ${formatSatang(totals.remainingSatang)} บาท`,
+    '',
+    ...funds.map(
+      (f) =>
+        `• ${f.name} เป้า ${formatSatang(f.targetSatang)} เก็บแล้ว ${formatSatang(f.savedSatang)}${
+          f.shortSatang > 0 ? ` ขาด ${formatSatang(f.shortSatang)}` : ' ครบแล้ว ✅'
+        } (เดือนละ ${formatSatang(f.perMonthSatang)})`,
+    ),
+  ];
   return { reply: lines.join('\n') };
 }
 

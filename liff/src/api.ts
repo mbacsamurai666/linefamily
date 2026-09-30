@@ -154,6 +154,7 @@ export interface DashboardData {
     netSatang: number;
   };
   netWorth: NetWorth;
+  finance: FamilyFinance;
 }
 
 export type SetupKey =
@@ -219,6 +220,8 @@ export interface TransactionItem {
   paidBy: string | null;
 }
 
+export type BillFrequency = 'ONCE' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
 export interface BillItem {
   id: string;
   name: string;
@@ -230,25 +233,145 @@ export interface BillItem {
   everyMonths: number;
   /** Which month of the cycle it lands in, 1-12; only set when everyMonths > 1. */
   dueMonth: number | null;
+  direction: 'IN' | 'OUT';
+  frequency: BillFrequency;
+  /** Days or weeks between DAILY or WEEKLY occurrences. */
+  interval: number;
+  /** "YYYY-MM-DD". */
+  startsOn: string | null;
+  endsOn: string | null;
+  note: string | null;
+  category: string | null;
+  frequencyLabel: string;
+  amountChanges: Array<{ effectiveFrom: string; amountSatang: number }>;
   active: boolean;
+}
+
+/** What a bill is saved as — the same shape for adding and editing. */
+export interface BillInput {
+  name: string;
+  amountBaht?: number | null;
+  estimateBaht?: number | null;
+  dueDay?: number;
+  everyMonths?: number;
+  dueMonth?: number | null;
+  direction?: 'IN' | 'OUT';
+  frequency?: BillFrequency;
+  interval?: number;
+  startsOn?: string | null;
+  endsOn?: string | null;
+  note?: string | null;
+  categoryName?: string | null;
+  amountChanges?: Array<{ effectiveFrom: string; amountBaht: number }>;
+}
+
+export type PaymentStatus = 'PAID' | 'UNPAID' | 'OVERDUE' | 'UNTRACKED';
+
+/** One due date of a recurring money item, as the calendar shows it. */
+export interface MoneyItem {
+  billId: string;
+  name: string;
+  category: string | null;
+  direction: 'IN' | 'OUT';
+  /** "YYYY-MM-DD". */
+  dueOn: string;
+  amountSatang: number | null;
+  estimated: boolean;
+  lumpy: boolean;
+  /** Comes out of its reserve pot rather than the month's money. */
+  fromPot: boolean;
+  status: PaymentStatus;
+  paidSatang: number | null;
+  paidOn: string | null;
+  paymentId: string | null;
+  frequencyLabel: string;
+  reservePerMonthSatang: number | null;
+}
+
+export interface MonthTotals {
+  month: string;
+  expenseSatang: number;
+  incomeSatang: number;
+  lumpySatang: number;
+  paidSatang: number;
+  unpaidSatang: number;
+  overdueSatang: number;
+}
+
+export interface MonthSummary extends MonthTotals {
+  runningSatang: number;
+  reserveSatang: number;
+  leftSatang: number;
+  actualIncomeSatang: number;
+  actualExpenseSatang: number;
+  items: MoneyItem[];
+}
+
+export interface Fund {
+  billId: string;
+  name: string;
+  category: string | null;
+  frequencyLabel: string;
+  nextDueOn: string;
+  targetSatang: number;
+  savedSatang: number;
+  shortSatang: number;
+  perMonthSatang: number;
+  monthsLeft: number;
+  catchUpPerMonthSatang: number;
+  behindSatang: number;
+}
+
+export interface FundTotals {
+  requiredSatang: number;
+  reservedSatang: number;
+  remainingSatang: number;
+  monthlyRequiredSatang: number;
+}
+
+export interface FamilyFinance {
+  monthlyIncomeSatang: number;
+  monthlyRunningSatang: number;
+  next12MonthsSatang: number;
+  thisMonth: MonthTotals;
+  nextMonth: MonthTotals;
+  monthlyReserveSatang: number;
+  monthlyLeftSatang: number;
+  months: MonthTotals[];
+  highest: MonthTotals | null;
+  lowest: MonthTotals | null;
+  upcoming: MoneyItem[];
+  funds: Fund[];
+  fundTotals: FundTotals;
+  alerts: Array<{ level: 'warn' | 'info'; text: string }>;
 }
 
 export interface PlannedItem {
   billId: string;
   name: string;
   category: string | null;
+  direction: 'IN' | 'OUT';
   amountSatang: number;
   estimated: boolean;
   day: number;
+  status: PaymentStatus;
   paid: boolean;
+  lumpy: boolean;
 }
 
 export interface ExpensePlan {
   year: number;
-  months: Array<{ month: number; dueSatang: number; paidSatang: number; items: PlannedItem[] }>;
+  months: Array<{ month: number; dueSatang: number; incomeSatang: number; paidSatang: number; items: PlannedItem[] }>;
+  /** Everything planned to go out in the year. */
   totalSatang: number;
-  /** The year's total spread evenly — what to put aside each month. */
+  incomeSatang: number;
+  /** The year's spending spread evenly — the average month. */
   perMonthSatang: number;
+  /** What to put aside every month for the bills paid in one go. */
+  reserveSatang: number;
+  lumpySatang: number;
+  highestMonth: number | null;
+  lowestMonth: number | null;
   byCategory: Array<{ category: string; totalSatang: number }>;
   missingAmount: string[];
 }
@@ -304,7 +427,7 @@ export const api = {
   event: (id: string) => request<EventDetail>(`/events/${id}`),
   /** `from`/`to` are "YYYY-MM-DD" or full local datetime strings. */
   events: (from: string, to: string) =>
-    request<{ items: EventSummary[]; holidays: Holiday[] }>(
+    request<{ items: EventSummary[]; holidays: Holiday[]; money?: MoneyItem[] }>(
       `/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     ),
   expenseSummary: (month?: string) =>
@@ -431,26 +554,29 @@ export const api = {
   deleteTransaction: (id: string) => request(`/transactions/${id}`, { method: 'DELETE' }),
 
   bills: () => request<{ items: BillItem[] }>('/bills'),
-  addBill: (body: {
-    name: string;
-    amountBaht?: number;
-    dueDay: number;
-    everyMonths?: number;
-    dueMonth?: number;
-    estimateBaht?: number;
-  }) => request('/bills', { method: 'POST', body: JSON.stringify(body) }),
-  updateBill: (
-    id: string,
-    body: {
-      name?: string;
-      amountBaht?: number | null;
-      dueDay?: number;
-      everyMonths?: number;
-      dueMonth?: number | null;
-      estimateBaht?: number | null;
-      active?: boolean;
-    },
-  ) => request(`/bills/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  addBill: (body: BillInput) =>
+    request<{ summary: string; recordId?: string }>('/bills', { method: 'POST', body: JSON.stringify(body) }),
+  updateBill: (id: string, body: Partial<BillInput> & { active?: boolean }) =>
+    request(`/bills/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** Settle one due date; the oldest one outstanding when dueOn is left out. */
+  payBill: (id: string, body: { dueOn?: string; amountBaht?: number; paidOn?: string; note?: string } = {}) =>
+    request<{ alreadyPaid: boolean; fromReserveSatang: number; amountSatang: number | null }>(`/bills/${id}/pay`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  unpayBill: (id: string, dueOn: string) =>
+    request(`/bills/${id}/pay?dueOn=${encodeURIComponent(dueOn)}`, { method: 'DELETE' }),
+  monthSummary: (month: string) => request<MonthSummary>(`/money/month?month=${month}`),
+  finance: () => request<FamilyFinance>('/money/finance'),
+  moneyCategories: () => request<{ OUT: string[]; IN: string[] }>('/money/categories'),
+  funds: () => request<{ items: Fund[]; totals: FundTotals }>('/funds'),
+  fundEntries: (billId: string) =>
+    request<{ items: Array<{ id: string; amountSatang: number; at: string; note: string | null; fromPayment: boolean }> }>(
+      `/funds/${billId}/entries`,
+    ),
+  addFundEntry: (billId: string, body: { amountBaht: number; note?: string }) =>
+    request(`/funds/${billId}/entries`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteFundEntry: (id: string) => request(`/funds/entries/${id}`, { method: 'DELETE' }),
   /** What the household is committed to paying, month by month. */
   expensePlan: (year?: number) =>
     request<ExpensePlan>(`/expense-plan${year ? `?year=${year}` : ''}`),

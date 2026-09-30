@@ -7,6 +7,16 @@ import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js'
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
 import { computeExpensePlan } from '../modules/expensePlan.js';
+import { dateOnly } from '../modules/billOccurrences.js';
+import {
+  computeFamilyFinance,
+  computeFunds,
+  computeMonthSummary,
+  frequencyLabel,
+  fundTotals,
+  moneyItems,
+} from '../modules/money.js';
+import { STARTER_EXPENSE_CATEGORIES, STARTER_INCOME_CATEGORIES } from '../modules/moneyCategories.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import {
   computeNetWorth,
@@ -18,6 +28,7 @@ import { persistDraft, resolveRotation } from '../modules/persist.js';
 import { guessEventCategory } from '../intent/categories.js';
 import { applyLeadTimes, familyLeadTimes, LEAD_KINDS } from '../modules/leadTimes.js';
 import { computeSetupStatus } from '../modules/setup.js';
+import { markBillPaid, unmarkBillPaid } from '../reminders/generate.js';
 import {
   deleteAsset,
   deleteBill,
@@ -170,19 +181,57 @@ const eventBody = z.object({
   rrule: z.string().optional(),
 });
 
-/** 1 monthly, 3 or 6 for a premium or a school term, 12 for a yearly one. */
-const billCycle = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(6), z.literal(12)]);
+/** Months between due dates: 1 monthly, 3 or 6 for a premium or a school term, 12 yearly, or any custom gap. */
+const billCycle = z.number().int().min(1).max(24);
+/** A real amount of money: more than nothing, less than a hundred million baht. */
+const money = z
+  .number({ invalid_type_error: 'จำนวนเงินต้องเป็นตัวเลข' })
+  .positive('จำนวนเงินต้องมากกว่า 0')
+  .max(100_000_000, 'จำนวนเงินมากเกินไป');
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'วันที่ต้องเป็นแบบ YYYY-MM-DD');
+const billFrequency = z.enum(['ONCE', 'DAILY', 'WEEKLY', 'MONTHLY']);
+const amountChange = z.object({ effectiveFrom: isoDay, amountBaht: money });
 
-const billBody = z.object({
-  name: z.string().min(1),
-  amountBaht: z.number().positive().optional(),
-  dueDay: z.number().int().min(1).max(31),
-  everyMonths: billCycle.optional(),
-  /** Which month of the cycle it lands in, 1-12; only read when everyMonths > 1. */
-  dueMonth: z.number().int().min(1).max(12).optional(),
-  /** What to plan for when the charge varies month to month. */
-  estimateBaht: z.number().positive().optional(),
-});
+const billBody = z
+  .object({
+    name: z.string().trim().min(1, 'ต้องมีชื่อรายการ').max(80),
+    amountBaht: money.optional(),
+    /** Only month-based bills fall on a day of the month; the rest go by startsOn. */
+    dueDay: z.number().int().min(1).max(31).optional(),
+    everyMonths: billCycle.optional(),
+    /** Which month of the cycle it lands in, 1-12; only read when everyMonths > 1. */
+    dueMonth: z.number().int().min(1).max(12).optional(),
+    /** What to plan for when the charge varies month to month. */
+    estimateBaht: money.optional(),
+    direction: z.enum(['IN', 'OUT']).optional(),
+    frequency: billFrequency.optional(),
+    interval: z.number().int().min(1).max(365).optional(),
+    startsOn: isoDay.optional(),
+    endsOn: isoDay.optional(),
+    note: z.string().max(300).optional(),
+    categoryName: z.string().trim().min(1).max(40).optional(),
+    amountChanges: z.array(amountChange).max(20).optional(),
+  })
+  .superRefine((b, ctx) => {
+    const frequency = b.frequency ?? 'MONTHLY';
+    if (frequency === 'MONTHLY' && b.dueDay === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['dueDay'], message: 'ต้องระบุวันที่ครบกำหนดของเดือน' });
+    }
+    if (frequency === 'ONCE' && !b.startsOn) {
+      ctx.addIssue({ code: 'custom', path: ['startsOn'], message: 'ต้องระบุวันที่' });
+    }
+    if (b.startsOn && b.endsOn && b.endsOn < b.startsOn) {
+      ctx.addIssue({ code: 'custom', path: ['endsOn'], message: 'วันสิ้นสุดต้องไม่ก่อนวันเริ่ม' });
+    }
+  });
+
+/** The first thing wrong with a request, as a sentence the app can show as it is. */
+function issueText(error: z.ZodError): string {
+  return error.issues[0]?.message ?? 'ข้อมูลไม่ถูกต้อง';
+}
+
+/** A day in the family's zone from "YYYY-MM-DD". */
+const dayIn = (iso: string, zone: string) => DateTime.fromISO(iso, { zone }).startOf('day');
 
 const documentBody = z.object({
   name: z.string().min(1),
@@ -305,13 +354,38 @@ const transactionPatchBody = z.object({
 });
 
 const billPatchBody = z.object({
-  name: z.string().min(1).optional(),
-  amountBaht: z.number().positive().nullable().optional(),
+  name: z.string().trim().min(1, 'ต้องมีชื่อรายการ').max(80).optional(),
+  amountBaht: money.nullable().optional(),
   dueDay: z.number().int().min(1).max(31).optional(),
   everyMonths: billCycle.optional(),
   dueMonth: z.number().int().min(1).max(12).nullable().optional(),
-  estimateBaht: z.number().positive().nullable().optional(),
+  estimateBaht: money.nullable().optional(),
+  direction: z.enum(['IN', 'OUT']).optional(),
+  frequency: billFrequency.optional(),
+  interval: z.number().int().min(1).max(365).optional(),
+  startsOn: isoDay.nullable().optional(),
+  endsOn: isoDay.nullable().optional(),
+  note: z.string().max(300).nullable().optional(),
+  categoryName: z.string().trim().min(1).max(40).nullable().optional(),
+  amountChanges: z.array(amountChange).max(20).optional(),
   active: z.boolean().optional(),
+});
+
+const payBody = z.object({
+  dueOn: isoDay.optional(),
+  /** What was really paid; the planned amount when omitted. Zero is a real answer. */
+  amountBaht: z.number().min(0, 'จำนวนเงินติดลบไม่ได้').max(100_000_000).optional(),
+  paidOn: isoDay.optional(),
+  note: z.string().max(300).optional(),
+});
+
+const reserveBody = z.object({
+  /** Negative takes money back out of the pot. */
+  amountBaht: z
+    .number()
+    .refine((n) => n !== 0, 'จำนวนเงินต้องไม่เป็น 0')
+    .refine((n) => Math.abs(n) <= 100_000_000, 'จำนวนเงินมากเกินไป'),
+  note: z.string().max(300).optional(),
 });
 
 const documentPatchBody = z.object({
@@ -622,6 +696,138 @@ export function createApiRouter(deps: ApiDeps) {
     });
   });
 
+  /**
+   * Settles one due date of a bill — the one given, or the oldest still
+   * outstanding. Paying the same date twice records nothing the second time.
+   */
+  app.post('/bills/:id/pay', async (c) => {
+    const member = c.get('member');
+    const parsed = payBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
+    const bill = await deps.prisma.bill.findFirst({
+      where: { id: c.req.param('id'), familyId: member.familyId },
+      select: { id: true },
+    });
+    if (!bill) return c.json({ error: 'not found' }, 404);
+
+    const now = DateTime.now().setZone(member.timezone);
+    const result = await markBillPaid(deps.prisma, bill.id, now, {
+      ...(parsed.data.dueOn ? { dueOn: dayIn(parsed.data.dueOn, member.timezone) } : {}),
+      ...(parsed.data.amountBaht !== undefined ? { amountSatang: Math.round(parsed.data.amountBaht * 100) } : {}),
+      ...(parsed.data.paidOn ? { paidOn: dayIn(parsed.data.paidOn, member.timezone).set({ hour: 12 }) } : {}),
+      ...(parsed.data.note ? { note: parsed.data.note } : {}),
+      memberId: member.memberId,
+    });
+    return c.json(result);
+  });
+
+  /** Takes back a payment recorded against a due date by mistake. */
+  app.delete('/bills/:id/pay', async (c) => {
+    const member = c.get('member');
+    const dueOn = c.req.query('dueOn') ?? '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueOn)) return c.json({ error: 'dueOn must be YYYY-MM-DD' }, 400);
+    const bill = await deps.prisma.bill.findFirst({
+      where: { id: c.req.param('id'), familyId: member.familyId },
+      select: { id: true },
+    });
+    if (!bill) return c.json({ error: 'not found' }, 404);
+    const ok = await unmarkBillPaid(
+      deps.prisma,
+      bill.id,
+      dayIn(dueOn, member.timezone),
+      DateTime.now().setZone(member.timezone),
+    );
+    return ok ? c.json({ ok: true }) : c.json({ error: 'not paid' }, 404);
+  });
+
+  /** One month as the calendar shows it under the board. */
+  app.get('/money/month', async (c) => {
+    const member = c.get('member');
+    const month = DateTime.fromFormat(c.req.query('month') ?? '', 'yyyy-MM', { zone: member.timezone });
+    if (!month.isValid) return c.json({ error: 'month must be YYYY-MM' }, 400);
+    return c.json(
+      await computeMonthSummary(deps.prisma, member.familyId, month, member.timezone, DateTime.now().setZone(member.timezone)),
+    );
+  });
+
+  /** The family's money over the next twelve months, for the dashboard. */
+  app.get('/money/finance', async (c) => {
+    const member = c.get('member');
+    return c.json(
+      await computeFamilyFinance(deps.prisma, member.familyId, member.timezone, DateTime.now().setZone(member.timezone)),
+    );
+  });
+
+  /** The categories money can be filed under: the family's own, and the usual ones to start from. */
+  app.get('/money/categories', async (c) => {
+    const member = c.get('member');
+    const own = await deps.prisma.category.findMany({
+      where: { familyId: member.familyId },
+      select: { name: true, kind: true },
+      orderBy: { name: 'asc' },
+    });
+    const names = (kind: 'IN' | 'OUT', starters: readonly string[]) => [
+      ...new Set([...starters, ...own.filter((cat) => cat.kind === kind).map((cat) => cat.name)]),
+    ];
+    return c.json({ OUT: names('OUT', STARTER_EXPENSE_CATEGORIES), IN: names('IN', STARTER_INCOME_CATEGORIES) });
+  });
+
+  /** One pot per bill paid in one go: target, balance, and what it takes monthly. */
+  app.get('/funds', async (c) => {
+    const member = c.get('member');
+    const funds = await computeFunds(deps.prisma, member.familyId, member.timezone, DateTime.now().setZone(member.timezone));
+    return c.json({ items: funds, totals: fundTotals(funds) });
+  });
+
+  app.get('/funds/:billId/entries', async (c) => {
+    const member = c.get('member');
+    const rows = await deps.prisma.reserveEntry.findMany({
+      where: { familyId: member.familyId, billId: c.req.param('billId') },
+      orderBy: { at: 'desc' },
+      take: 100,
+    });
+    return c.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        amountSatang: r.amount,
+        at: r.at.toISOString(),
+        note: r.note,
+        /** Taken out to pay the bill — undone by undoing the payment, not here. */
+        fromPayment: r.transactionId !== null,
+      })),
+    });
+  });
+
+  /** Put money into a pot, or take it out with a negative amount. */
+  app.post('/funds/:billId/entries', async (c) => {
+    const member = c.get('member');
+    const parsed = reserveBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
+    const bill = await deps.prisma.bill.findFirst({
+      where: { id: c.req.param('billId'), familyId: member.familyId },
+      select: { id: true },
+    });
+    if (!bill) return c.json({ error: 'not found' }, 404);
+    const row = await deps.prisma.reserveEntry.create({
+      data: {
+        familyId: member.familyId,
+        billId: bill.id,
+        amount: Math.round(parsed.data.amountBaht * 100),
+        ...(parsed.data.note ? { note: parsed.data.note } : {}),
+      },
+    });
+    return c.json({ id: row.id }, 201);
+  });
+
+  app.delete('/funds/entries/:id', async (c) => {
+    const member = c.get('member');
+    // A draw made by paying the bill is undone with the payment, so the two never disagree.
+    const removed = await deps.prisma.reserveEntry.deleteMany({
+      where: { id: c.req.param('id'), familyId: member.familyId, transactionId: null },
+    });
+    return removed.count > 0 ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
+  });
+
   /** What the household is committed to paying, month by month. */
   app.get('/expense-plan', async (c) => {
     const member = c.get('member');
@@ -673,7 +879,13 @@ export function createApiRouter(deps: ApiDeps) {
       return c.json({ error: 'range too wide' }, 400);
     }
 
-    return c.json(await listCalendar(deps.prisma, member.familyId, from, to, member.timezone));
+    const now = DateTime.now().setZone(member.timezone);
+    // Money due in the same window rides along: one calendar, one request.
+    const [calendar, moneyDue] = await Promise.all([
+      listCalendar(deps.prisma, member.familyId, from, to, member.timezone),
+      moneyItems(deps.prisma, member.familyId, from, to, member.timezone, now),
+    ]);
+    return c.json({ ...calendar, money: moneyDue });
   });
 
   app.get('/events/:id', async (c) => {
@@ -772,16 +984,17 @@ export function createApiRouter(deps: ApiDeps) {
     const now = DateTime.now().setZone(member.timezone);
     const month = now.toFormat('yyyy-MM');
 
-    const [upcoming, money, netWorth, tasks] = await Promise.all([
+    const [upcoming, money, netWorth, tasks, finance] = await Promise.all([
       computeUpcoming(deps.prisma, member.familyId, now, member.timezone),
       // month is always a valid "yyyy-MM" here (derived from `now`), so this
       // never actually returns null.
       computeMoneyOverview(deps.prisma, member.familyId, month, member.timezone),
       computeNetWorth(deps.prisma, member.familyId),
       computeTaskCounts(deps.prisma, member.familyId, now, member.timezone),
+      computeFamilyFinance(deps.prisma, member.familyId, member.timezone, now),
     ]);
 
-    return c.json({ upcoming, money, netWorth, tasks });
+    return c.json({ upcoming, money, netWorth, tasks, finance });
   });
 
   app.get('/loans', async (c) => {
@@ -1115,10 +1328,16 @@ export function createApiRouter(deps: ApiDeps) {
 
   app.get('/bills', async (c) => {
     const member = c.get('member');
-    const rows = await deps.prisma.bill.findMany({
-      where: { familyId: member.familyId },
-      orderBy: { dueDay: 'asc' },
-    });
+    const [rows, categories] = await Promise.all([
+      deps.prisma.bill.findMany({
+        where: { familyId: member.familyId },
+        include: { amounts: { orderBy: { effectiveFrom: 'asc' } } },
+        orderBy: { dueDay: 'asc' },
+      }),
+      deps.prisma.category.findMany({ where: { familyId: member.familyId }, select: { id: true, name: true } }),
+    ]);
+    const categoryName = new Map(categories.map((cat) => [cat.id, cat.name]));
+    const day = (d: Date | null) => (d ? dateOnly(d, member.timezone).toISODate() : null);
 
     return c.json({
       items: rows.map((b) => ({
@@ -1129,6 +1348,15 @@ export function createApiRouter(deps: ApiDeps) {
         dueDay: b.dueDay,
         everyMonths: b.everyMonths,
         dueMonth: b.dueMonth,
+        direction: b.direction,
+        frequency: b.frequency,
+        interval: b.interval,
+        startsOn: day(b.startsOn),
+        endsOn: day(b.endsOn),
+        note: b.note,
+        category: b.categoryId ? (categoryName.get(b.categoryId) ?? null) : null,
+        frequencyLabel: frequencyLabel(b),
+        amountChanges: b.amounts.map((a) => ({ effectiveFrom: day(a.effectiveFrom), amountSatang: a.amount })),
         active: b.active,
       })),
     });
@@ -1137,14 +1365,30 @@ export function createApiRouter(deps: ApiDeps) {
   app.post('/bills', async (c) => {
     const member = c.get('member');
     const parsed = billBody.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
 
     const now = DateTime.now().setZone(member.timezone);
     const result = await persistDraft(
       {
         kind: 'bill',
         name: parsed.data.name,
-        dueDay: parsed.data.dueDay,
+        // Day-of-month only matters for month-based bills; the rest keep 1.
+        dueDay: parsed.data.dueDay ?? (parsed.data.startsOn ? dayIn(parsed.data.startsOn, member.timezone).day : 1),
+        ...(parsed.data.direction !== undefined ? { direction: parsed.data.direction } : {}),
+        ...(parsed.data.frequency !== undefined ? { frequency: parsed.data.frequency } : {}),
+        ...(parsed.data.interval !== undefined ? { interval: parsed.data.interval } : {}),
+        ...(parsed.data.startsOn !== undefined ? { startsOn: dayIn(parsed.data.startsOn, member.timezone) } : {}),
+        ...(parsed.data.endsOn !== undefined ? { endsOn: dayIn(parsed.data.endsOn, member.timezone) } : {}),
+        ...(parsed.data.note !== undefined ? { note: parsed.data.note } : {}),
+        ...(parsed.data.categoryName !== undefined ? { categoryName: parsed.data.categoryName } : {}),
+        ...(parsed.data.amountChanges !== undefined
+          ? {
+              amountChanges: parsed.data.amountChanges.map((c) => ({
+                effectiveFrom: dayIn(c.effectiveFrom, member.timezone),
+                amount: Math.round(c.amountBaht * 100),
+              })),
+            }
+          : {}),
         ...(parsed.data.everyMonths !== undefined ? { everyMonths: parsed.data.everyMonths } : {}),
         ...(parsed.data.dueMonth !== undefined ? { dueMonth: parsed.data.dueMonth } : {}),
         ...(parsed.data.estimateBaht !== undefined
@@ -1162,11 +1406,22 @@ export function createApiRouter(deps: ApiDeps) {
 
   app.patch('/bills/:id', async (c) => {
     const parsed = billPatchBody.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
 
-    const { amountBaht, estimateBaht, ...rest } = parsed.data;
-    const ok = await updateBill(recordCtx(c.get('member')), c.req.param('id'), {
+    const member = c.get('member');
+    const { amountBaht, estimateBaht, startsOn, endsOn, amountChanges, ...rest } = parsed.data;
+    const ok = await updateBill(recordCtx(member), c.req.param('id'), {
       ...definedOnly(rest),
+      ...(startsOn !== undefined ? { startsOn: startsOn === null ? null : dayIn(startsOn, member.timezone) } : {}),
+      ...(endsOn !== undefined ? { endsOn: endsOn === null ? null : dayIn(endsOn, member.timezone) } : {}),
+      ...(amountChanges !== undefined
+        ? {
+            amountChanges: amountChanges.map((ch) => ({
+              effectiveFrom: dayIn(ch.effectiveFrom, member.timezone),
+              amount: Math.round(ch.amountBaht * 100),
+            })),
+          }
+        : {}),
       ...(amountBaht !== undefined
         ? { amount: amountBaht === null ? null : Math.round(amountBaht * 100) }
         : {}),

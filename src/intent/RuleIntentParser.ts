@@ -31,7 +31,7 @@ const SHOPPING_PREFIX = /^(?:ซื้อของ|รายการซื้�
 const AMOUNT_TOKEN = /(\d[\d,]*(?:\.\d{1,2})?|[ก-๛]+)\s*บาท|(\d[\d,]*(?:\.\d{1,2})?)/;
 
 const BILL_PREFIX =
-  /^(?:ตั้งบิล|เพิ่มบิล|บิลใหม่|บิลประจำเดือน|ตั้งค่าใช้จ่ายประจำ|ค่าใช้จ่ายประจำ)\s*[:：]?\s*/;
+  /^(?:ตั้งบิล|เพิ่มบิล|บิลใหม่|บิลประจำเดือน|ตั้งค่าใช้จ่ายประจำ|ค่าใช้จ่ายประจำ|ตั้งรายรับประจำ|รายรับประจำ)\s*[:：]?\s*/;
 const DUE_DAY = /ทุก\s?วันที่\s*(\d{1,2})/;
 
 /**
@@ -169,6 +169,8 @@ function matchBill(text: string): ParseResult {
       name,
       dueDay,
       ...(everyMonths !== 1 ? { everyMonths } : {}),
+      // "ตั้งรายรับประจำ เงินเดือน 50000 ทุกวันที่ 25" — money coming in.
+      ...(prefix[0].includes('รายรับ') ? { direction: 'IN' as const } : {}),
       ...(dueMonth !== undefined ? { dueMonth } : {}),
       ...(amount !== null && amount > 0 ? { amount } : {}),
       ...(estimateAmount !== null && estimateAmount > 0 ? { estimateAmount } : {}),
