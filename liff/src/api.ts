@@ -77,6 +77,18 @@ export interface EventSummary {
   location: string | null;
   /** A repeating appointment appears once per occurrence, all sharing `id`. */
   repeats: boolean;
+  /** Who it is for — a child's exam carries the child's name. */
+  people?: string[];
+}
+
+/** Someone the family keeps a calendar for — in the LINE group or not. */
+export interface Person {
+  id: string;
+  displayName: string;
+  role: 'ADMIN' | 'ADULT' | 'CHILD' | 'ELDER';
+  birthDate: string | null;
+  /** In the LINE group: named by LINE, and not removable from the app. */
+  inLine: boolean;
 }
 
 export interface Holiday {
@@ -553,6 +565,12 @@ export const api = {
   ) => request(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteTransaction: (id: string) => request(`/transactions/${id}`, { method: 'DELETE' }),
 
+  people: () => request<{ items: Person[] }>('/people'),
+  addPerson: (body: { displayName: string; role?: 'ADULT' | 'CHILD' | 'ELDER'; birthDate?: string | null }) =>
+    request<{ id: string }>('/people', { method: 'POST', body: JSON.stringify(body) }),
+  updatePerson: (id: string, body: { displayName?: string; role?: 'ADULT' | 'CHILD' | 'ELDER'; birthDate?: string | null }) =>
+    request(`/people/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePerson: (id: string) => request(`/people/${id}`, { method: 'DELETE' }),
   bills: () => request<{ items: BillItem[] }>('/bills'),
   addBill: (body: BillInput) =>
     request<{ summary: string; recordId?: string }>('/bills', { method: 'POST', body: JSON.stringify(body) }),

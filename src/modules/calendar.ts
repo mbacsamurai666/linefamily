@@ -30,6 +30,8 @@ export interface CalendarEntry {
   allDay: boolean;
   location: string | null;
   repeats: boolean;
+  /** Who it is for — a child's exam carries the child's name. */
+  people: string[];
 }
 
 /**
@@ -74,6 +76,7 @@ export async function listCalendar(
         { rrule: { not: null }, startAt: { lt: from.toJSDate() } },
       ],
     },
+    include: { attendees: { select: { member: { select: { displayName: true } } } } },
     orderBy: { startAt: 'asc' },
     take: 300,
   });
@@ -88,6 +91,7 @@ export async function listCalendar(
       allDay: event.allDay,
       location: event.location,
       repeats: event.rrule !== null,
+      people: event.attendees.map((a) => a.member.displayName),
     };
     const durationMs = event.endAt ? event.endAt.getTime() - event.startAt.getTime() : null;
 

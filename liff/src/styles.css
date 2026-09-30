@@ -1572,6 +1572,18 @@ select {
   background: #2e9d5b;
 }
 
+.people-filter {
+  align-items: center;
+}
+
+.people-filter-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-right: 2px;
+}
+
 .kind-filter .money-toggle {
   border-style: dashed;
 }

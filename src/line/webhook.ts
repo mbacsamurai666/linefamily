@@ -11,6 +11,8 @@ import { buildClarifyCard } from './flex/clarify.js';
 import { buildConfirmCard } from './flex/confirm.js';
 import type { DraftStore } from './drafts.js';
 import type { PhotoTargetStore } from './photoTargets.js';
+import type { AssignmentStore } from './assignments.js';
+import { generateEventJobs } from '../reminders/generate.js';
 
 /**
  * Webhook event handling.
@@ -33,6 +35,8 @@ export interface WebhookDeps {
   visionParser?: VisionParser;
   /** Remembers which document an incoming photo belongs to. */
   photoTargets?: PhotoTargetStore;
+  /** Appointments just saved, waiting for "ของใคร?" to be answered. */
+  assignments?: AssignmentStore;
   /** ChatGPT's translation of plain speech into commands. Omit to run with rules only. */
   rewriter?: CommandRewriter;
   /** The LIFF app's link, handed to people who join or ask. Omit when there is no app. */
@@ -577,6 +581,77 @@ async function handleImageMessage(
   });
 }
 
+/**
+ * One button per child (anyone the family added who is not in the LINE
+ * group), so "whose exam is this" is a tap. Nothing to ask when there is
+ * nobody like that.
+ */
+async function askWhose(
+  deps: WebhookDeps,
+  familyId: string,
+  eventIds: string[],
+): Promise<messagingApi.QuickReply | null> {
+  if (!deps.assignments) return null;
+  const people = await deps.prisma.member.findMany({
+    where: { familyId, OR: [{ role: 'CHILD' }, { lineUserId: null }] },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, displayName: true },
+    take: 12,
+  });
+  if (people.length === 0) return null;
+
+  const token = deps.assignments.put(familyId, eventIds);
+  return {
+    items: people.map((p) => ({
+      type: 'action' as const,
+      action: {
+        type: 'postback' as const,
+        label: p.displayName.slice(0, 20),
+        data: `action=assign&token=${encodeURIComponent(token)}&person=${encodeURIComponent(p.id)}`,
+        displayText: `ของ${p.displayName}`,
+      },
+    })),
+  };
+}
+
+async function handleAssign(
+  replyToken: string,
+  token: string,
+  personId: string | null,
+  deps: WebhookDeps,
+): Promise<void> {
+  const pending = deps.assignments?.take(token);
+  const person = pending && personId
+    ? await deps.prisma.member.findFirst({ where: { id: personId, familyId: pending.familyId }, select: { id: true, displayName: true } })
+    : null;
+  if (!pending || !person) {
+    await deps.api.replyMessage({
+      replyToken,
+      messages: [{ type: 'text', text: 'คำถามนี้หมดเวลาแล้วครับ แก้ได้ในปฏิทินของแอป' }],
+    });
+    return;
+  }
+
+  const events = await deps.prisma.event.findMany({
+    where: { id: { in: pending.eventIds }, familyId: pending.familyId },
+    select: { id: true, familyId: true },
+  });
+  await deps.prisma.eventAttendee.createMany({
+    data: events.map((e) => ({ eventId: e.id, memberId: person.id })),
+    skipDuplicates: true,
+  });
+  // The reminders name who the appointment is for; say it from now on.
+  const zone =
+    (await deps.prisma.family.findUnique({ where: { id: pending.familyId }, select: { timezone: true } }))?.timezone ??
+    deps.defaultTimezone;
+  for (const e of events) await generateEventJobs(deps.prisma, e.id, DateTime.now().setZone(zone));
+
+  await deps.api.replyMessage({
+    replyToken,
+    messages: [{ type: 'text', text: `👧 ตั้งเป็นของ${person.displayName}ให้ ${events.length} นัดแล้วครับ` }],
+  });
+}
+
 async function handlePostback(
   event: Extract<WebhookEvent, { type: 'postback' }>,
   deps: WebhookDeps,
@@ -601,6 +676,11 @@ async function handlePostback(
     return;
   }
 
+  if (action === 'assign' && token) {
+    await handleAssign(event.replyToken, token, params.get('person'), deps);
+    return;
+  }
+
   if (action !== 'confirm' || !token) return;
 
   const pending = deps.drafts.take(token);
@@ -619,7 +699,7 @@ async function handlePostback(
   const zone = family?.timezone ?? deps.defaultTimezone;
 
   try {
-    const { summary, photoTarget } = await persistDraft(pending.draft, {
+    const { summary, photoTarget, unassignedEventIds } = await persistDraft(pending.draft, {
       prisma: deps.prisma,
       familyId: pending.familyId,
       memberId: pending.memberId,
@@ -634,9 +714,19 @@ async function handlePostback(
       followUp = '\n\n📷 ส่งรูปเอกสารมาได้เลยครับ เดี๋ยวเก็บไว้ให้ (ภายใน 15 นาที)';
     }
 
+    const whose = unassignedEventIds?.length
+      ? await askWhose(deps, pending.familyId, unassignedEventIds)
+      : null;
+
     await deps.api.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: `✅ ${summary}${followUp}` }],
+      messages: [
+        {
+          type: 'text',
+          text: `✅ ${summary}${followUp}${whose ? '\n\nเป็นนัดของใครครับ?' : ''}`,
+          ...(whose ? { quickReply: whose } : {}),
+        },
+      ],
     });
   } catch (err) {
     deps.log?.('persist failed', { err: String(err) });

@@ -7,7 +7,7 @@ import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js'
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
 import { computeExpensePlan } from '../modules/expensePlan.js';
-import { dateOnly } from '../modules/billOccurrences.js';
+import { dateOnly, toDateColumn } from '../modules/billOccurrences.js';
 import {
   computeFamilyFinance,
   computeFunds,
@@ -28,7 +28,7 @@ import { persistDraft, resolveRotation } from '../modules/persist.js';
 import { guessEventCategory } from '../intent/categories.js';
 import { applyLeadTimes, familyLeadTimes, LEAD_KINDS } from '../modules/leadTimes.js';
 import { computeSetupStatus } from '../modules/setup.js';
-import { markBillPaid, unmarkBillPaid } from '../reminders/generate.js';
+import { generateBirthdayJobs, markBillPaid, unmarkBillPaid } from '../reminders/generate.js';
 import {
   deleteAsset,
   deleteBill,
@@ -369,6 +369,12 @@ const billPatchBody = z.object({
   categoryName: z.string().trim().min(1).max(40).nullable().optional(),
   amountChanges: z.array(amountChange).max(20).optional(),
   active: z.boolean().optional(),
+});
+
+const personBody = z.object({
+  displayName: z.string().trim().min(1, 'ต้องมีชื่อ').max(40),
+  role: z.enum(['ADULT', 'CHILD', 'ELDER']).optional(),
+  birthDate: isoDay.nullable().optional(),
 });
 
 const payBody = z.object({
@@ -826,6 +832,90 @@ export function createApiRouter(deps: ApiDeps) {
       where: { id: c.req.param('id'), familyId: member.familyId, transactionId: null },
     });
     return removed.count > 0 ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
+  });
+
+  /**
+   * Everyone the family keeps a calendar for: the people in the LINE group,
+   * and the ones who are not — the children whose exams fill the calendar.
+   */
+  app.get('/people', async (c) => {
+    const member = c.get('member');
+    const rows = await deps.prisma.member.findMany({
+      where: { familyId: member.familyId },
+      orderBy: [{ createdAt: 'asc' }],
+      select: { id: true, displayName: true, role: true, birthDate: true, lineUserId: true },
+    });
+    return c.json({
+      items: rows.map((r) => ({
+        id: r.id,
+        displayName: r.displayName,
+        role: r.role,
+        birthDate: r.birthDate ? dateOnly(r.birthDate, member.timezone).toISODate() : null,
+        /** In the LINE group: named by LINE, and not removable from here. */
+        inLine: r.lineUserId !== null,
+      })),
+    });
+  });
+
+  app.post('/people', async (c) => {
+    const member = c.get('member');
+    const parsed = personBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
+    // A name is how the chat finds someone ("น้องพร สอบ…"), so two alike cannot be told apart.
+    const clash = await deps.prisma.member.findFirst({
+      where: { familyId: member.familyId, displayName: parsed.data.displayName },
+      select: { id: true },
+    });
+    if (clash) return c.json({ error: 'มีชื่อนี้ในบ้านแล้ว' }, 409);
+    const row = await deps.prisma.member.create({
+      data: {
+        familyId: member.familyId,
+        displayName: parsed.data.displayName,
+        role: parsed.data.role ?? 'CHILD',
+        ...(parsed.data.birthDate ? { birthDate: toDateColumn(dayIn(parsed.data.birthDate, member.timezone)) } : {}),
+      },
+    });
+    if (row.birthDate) await generateBirthdayJobs(deps.prisma, row.id, DateTime.now().setZone(member.timezone));
+    return c.json({ id: row.id }, 201);
+  });
+
+  app.patch('/people/:id', async (c) => {
+    const member = c.get('member');
+    const parsed = personBody.partial().safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: issueText(parsed.error) }, 400);
+    const person = await deps.prisma.member.findFirst({
+      where: { id: c.req.param('id'), familyId: member.familyId },
+      select: { id: true },
+    });
+    if (!person) return c.json({ error: 'not found' }, 404);
+    if (parsed.data.displayName) {
+      const clash = await deps.prisma.member.findFirst({
+        where: { familyId: member.familyId, displayName: parsed.data.displayName, id: { not: person.id } },
+        select: { id: true },
+      });
+      if (clash) return c.json({ error: 'มีชื่อนี้ในบ้านแล้ว' }, 409);
+    }
+    await deps.prisma.member.update({
+      where: { id: person.id },
+      data: {
+        ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+        ...(parsed.data.role ? { role: parsed.data.role } : {}),
+        ...(parsed.data.birthDate !== undefined
+          ? { birthDate: parsed.data.birthDate ? toDateColumn(dayIn(parsed.data.birthDate, member.timezone)) : null }
+          : {}),
+      },
+    });
+    await generateBirthdayJobs(deps.prisma, person.id, DateTime.now().setZone(member.timezone));
+    return c.json({ ok: true });
+  });
+
+  /** Only someone the family added here; the LINE group decides who else is in it. */
+  app.delete('/people/:id', async (c) => {
+    const member = c.get('member');
+    const removed = await deps.prisma.member.deleteMany({
+      where: { id: c.req.param('id'), familyId: member.familyId, lineUserId: null },
+    });
+    return removed.count > 0 ? c.json({ ok: true }) : c.json({ error: 'ลบได้เฉพาะคนที่เพิ่มเองในแอป' }, 404);
   });
 
   /** What the household is committed to paying, month by month. */

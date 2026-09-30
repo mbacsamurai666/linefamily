@@ -6,6 +6,7 @@ import {
   type AgendaItem,
   type BillItem,
   type MoneyItem,
+  type Person,
   type ExpensePlan,
   type ChoreItem,
   type DashboardData,
@@ -943,6 +944,8 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
     }
   });
   const [moneyVersion, setMoneyVersion] = useState(0);
+  // "ของใคร": one person's appointments — a child's exams — or everyone's.
+  const [person, setPerson] = useState<string | null>(null);
   // What "＋ เพิ่ม" is adding: an appointment, money out or money in.
   const [addKind, setAddKind] = useState<'event' | 'OUT' | 'IN' | null>(null);
   const [editingBill, setEditingBill] = useState<BillItem | null>(null);
@@ -1032,8 +1035,15 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
   const monthEvents = current?.events ?? [];
   const monthMoney = showMoney ? (current?.money ?? []) : [];
   const moneyKind = kind?.startsWith('$') ?? false;
-  const shownEvents = !kind ? monthEvents : moneyKind ? [] : monthEvents.filter((e) => e.category === kind);
-  const shownMoney = !kind
+  const byKind = !kind ? monthEvents : moneyKind ? [] : monthEvents.filter((e) => e.category === kind);
+  const shownEvents = person ? byKind.filter((e) => e.people?.includes(person)) : byKind;
+  // Everyone named on this month's appointments, most-named first.
+  const monthPeople = [...new Set(monthEvents.flatMap((e) => e.people ?? []))]
+    .map((name) => ({ name, n: monthEvents.filter((e) => e.people?.includes(name)).length }))
+    .sort((a, b) => b.n - a.n);
+  const shownMoney = person
+    ? []
+    : !kind
     ? monthMoney
     : !moneyKind
       ? []
@@ -1153,6 +1163,25 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         </div>
       )}
 
+      {monthPeople.length > 0 && (
+        <div className="kind-filter people-filter" role="group" aria-label="ของใคร">
+          <span className="people-filter-label">ของใคร</span>
+          <button className={person === null ? 'active' : ''} aria-pressed={person === null} onClick={() => setPerson(null)}>
+            ทุกคน
+          </button>
+          {monthPeople.map(({ name, n }) => (
+            <button
+              key={name}
+              className={person === name ? 'active' : ''}
+              aria-pressed={person === name}
+              onClick={() => setPerson(person === name ? null : name)}
+            >
+              {name} <span className="kind-count">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {calView === 'board' ? (
         <CalendarBoard
           monthKey={monthKey}
@@ -1186,7 +1215,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
         />
       )}
 
-      {calView === 'board' && showMoney && <MonthMoneySummary monthKey={monthKey} refreshKey={moneyVersion} />}
+      {calView === 'board' && showMoney && !person && <MonthMoneySummary monthKey={monthKey} refreshKey={moneyVersion} />}
 
       <div className="cal-detail" hidden={calView === 'list'}>
         <div className="cal-detail-heading">
@@ -1284,6 +1313,7 @@ function CalendarTab({ timezone, initialDay }: CalendarTabProps) {
                         {' · '}
                         {spanLabel(ev, timezone) ?? (ev.allDay ? 'ทั้งวัน' : thaiTimeOnly(ev.startAt))}
                         {ev.location ? ` · ${ev.location}` : ''}
+                        {ev.people && ev.people.length > 0 ? ` · 👤 ${ev.people.join(', ')}` : ''}
                       </div>
                     </div>
                     <span className="agenda-chevron">{isExpanded ? '▾' : '▸'}</span>
@@ -1773,6 +1803,13 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
   const [categoryChosen, setCategoryChosen] = useState(Boolean(existing));
   const [location, setLocation] = useState(existing?.location ?? '');
   const [attendeeName, setAttendeeName] = useState(existing?.attendeeNames[0] ?? '');
+  const [people, setPeople] = useState<Person[]>([]);
+  useEffect(() => {
+    api
+      .people()
+      .then((r) => setPeople(r.items))
+      .catch(() => setPeople([]));
+  }, []);
   const [note, setNote] = useState(existing?.note ?? '');
   const [rrule, setRrule] = useState(existing?.rrule ?? '');
   // This appointment's own reminders. Null means "whatever the family set".
@@ -2014,13 +2051,21 @@ function AddEventForm({ selectedDay, onAdded, onCancel, editing, timezone }: Add
         <label htmlFor="event-attendee">
           สำหรับใคร <span className="optional">(ไม่บังคับ)</span>
         </label>
-        <input
-          id="event-attendee"
-          type="text"
-          placeholder="เช่น น้องพร"
-          value={attendeeName}
-          onChange={(e) => setAttendeeName(e.target.value)}
-        />
+        <select id="event-attendee" value={attendeeName} onChange={(e) => setAttendeeName(e.target.value)}>
+          <option value="">— ไม่ระบุ —</option>
+          {people.map((p) => (
+            <option key={p.id} value={p.displayName}>
+              {p.displayName}
+            </option>
+          ))}
+          {/* A name from before, kept even if that person has since gone. */}
+          {attendeeName && !people.some((p) => p.displayName === attendeeName) && (
+            <option value={attendeeName}>{attendeeName}</option>
+          )}
+        </select>
+        {people.length > 0 && !people.some((p) => !p.inLine) && (
+          <div className="muted">เพิ่มลูกหรือคนที่ไม่ได้อยู่ในกลุ่ม LINE ได้ที่แท็บจัดการ → คนในบ้าน</div>
+        )}
       </div>
 
       <div className="field">
@@ -2269,6 +2314,7 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
 
   return (
     <div>
+      <PeopleSection />
       <DigestSettingsSection />
       <LeadTimesSection />
       <ExpensePlanSection />
@@ -2280,6 +2326,153 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
       <EmergencySection openEdit={focus === 'emergency'} />
       <CalendarFeedSection />
       <BackupSection />
+    </div>
+  );
+}
+
+const ROLE_LABEL: Record<string, string> = { ADMIN: 'ผู้ใหญ่', ADULT: 'ผู้ใหญ่', CHILD: 'ลูก/เด็ก', ELDER: 'ผู้สูงอายุ' };
+
+/**
+ * Everyone the family keeps a calendar for. The people in the LINE group
+ * arrive by themselves; the children — whose exams fill the calendar — are
+ * added here, so an appointment can say whose it is and be filtered by them.
+ */
+function PeopleSection() {
+  const [people, setPeople] = useState<Person[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Person | 'new' | null>(null);
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<'ADULT' | 'CHILD' | 'ELDER'>('CHILD');
+  const [birthDate, setBirthDate] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = () =>
+    api
+      .people()
+      .then((r) => setPeople(r.items))
+      .catch((e: Error) => setError(readableError(e)));
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const open = (p: Person | 'new') => {
+    setEditing(p);
+    setError(null);
+    setName(p === 'new' ? '' : p.displayName);
+    setRole(p === 'new' ? 'CHILD' : p.role === 'ADMIN' ? 'ADULT' : p.role);
+    setBirthDate(p === 'new' ? '' : (p.birthDate ?? ''));
+  };
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return setError('ต้องมีชื่อ');
+    setSaving(true);
+    try {
+      const body = { displayName: name.trim(), role, birthDate: birthDate || null };
+      if (editing === 'new') await api.addPerson(body);
+      else if (editing) await api.updatePerson(editing.id, body);
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setError(readableError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="dash-section" id="section-people">
+      <div className="dash-section-heading">👨‍👩‍👧 คนในบ้าน</div>
+      <p className="muted">
+        เพิ่มลูกหรือคนที่ไม่ได้อยู่ในกลุ่ม LINE แล้วนัดโรงเรียนจะบอกได้ว่าเป็นของใคร และกรองดูเฉพาะคนนั้นได้ในปฏิทิน
+        พิมพ์ในแชตแบบ "น้องพร สอบปลายภาค 5 ต.ค." ก็ติดชื่อให้เอง
+      </p>
+      {error && <p className="error">{error}</p>}
+      {!people ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : (
+        <ul className="list">
+          {people.map((p) =>
+            editing !== 'new' && editing?.id === p.id ? null : (
+              <li key={p.id} className="finance-item finance-item-stacked">
+                <div className="finance-item-row">
+                  <div className="finance-item-main">
+                    <span className="finance-icon">{p.role === 'CHILD' ? '🧒' : p.role === 'ELDER' ? '👵' : '🧑'}</span>
+                    <div>
+                      <div>{p.displayName}</div>
+                      <div className="muted">
+                        {ROLE_LABEL[p.role]}
+                        {p.birthDate ? ` · เกิด ${thaiShortDayMonth(p.birthDate)} ${Number(p.birthDate.slice(0, 4)) + 543}` : ''}
+                        {p.inLine ? ' · อยู่ในกลุ่ม LINE' : ''}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {p.inLine ? (
+                  <div className="row-actions">
+                    <button type="button" className="row-btn" onClick={() => open(p)}>
+                      แก้ไข
+                    </button>
+                  </div>
+                ) : (
+                  <RowActions
+                    onEdit={() => open(p)}
+                    onDelete={async () => {
+                      await api.deletePerson(p.id);
+                      await load();
+                    }}
+                  />
+                )}
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+
+      {editing ? (
+        <form className="entry-form" onSubmit={save}>
+          <div className="field">
+            <label htmlFor="person-name">ชื่อ</label>
+            <input
+              id="person-name"
+              type="text"
+              maxLength={40}
+              placeholder="เช่น น้องพร"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="person-role">เป็น</label>
+              <select id="person-role" value={role} onChange={(e) => setRole(e.target.value as typeof role)}>
+                <option value="CHILD">ลูก/เด็ก</option>
+                <option value="ADULT">ผู้ใหญ่</option>
+                <option value="ELDER">ผู้สูงอายุ</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="person-birth">
+                วันเกิด <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input id="person-birth" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} />
+            </div>
+          </div>
+          <div className="field-row">
+            <button type="button" className="form-toggle" onClick={() => setEditing(null)}>
+              ยกเลิก
+            </button>
+            <button type="submit" className="form-submit" disabled={saving}>
+              {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="form-toggle" onClick={() => open('new')}>
+          ＋ เพิ่มลูก/คนในบ้าน
+        </button>
+      )}
     </div>
   );
 }

@@ -36,6 +36,11 @@ export interface PersistResult {
   /** The row just created, for callers that go on to show or open it. */
   recordId?: string;
   /**
+   * Appointments just saved that name nobody — the chat offers to say whose
+   * they are. Set only when there is someone who could be meant.
+   */
+  unassignedEventIds?: string[];
+  /**
    * Set when the row just saved can still take a photo — the caller offers to
    * keep one, and files whatever arrives next against this id.
    */
@@ -108,7 +113,13 @@ async function persistEvent(
 
   await generateEventJobs(ctx.prisma, event.id, ctx.now);
 
-  return { summary: `บันทึกนัด "${draft.title}" แล้ว` };
+  // A school appointment for nobody in particular is almost always a child's.
+  const unassigned = !draft.attendeeName && draft.category === 'SCHOOL';
+  return {
+    summary: `บันทึกนัด "${draft.title}" แล้ว`,
+    recordId: event.id,
+    ...(unassigned ? { unassignedEventIds: [event.id] } : {}),
+  };
 }
 
 /**
@@ -122,6 +133,7 @@ async function persistEventBatch(
 ): Promise<PersistResult> {
   let saved = 0;
   let existing = 0;
+  const unassigned: string[] = [];
   for (const ev of draft.events) {
     const twin = await ctx.prisma.event.findFirst({
       where: { familyId: ctx.familyId, title: ev.title, startAt: ev.startAt.toJSDate() },
@@ -131,11 +143,15 @@ async function persistEventBatch(
       existing += 1;
       continue;
     }
-    await persistEvent(ev, ctx);
+    const result = await persistEvent(ev, ctx);
+    if (!ev.attendeeName && result.recordId) unassigned.push(result.recordId);
     saved += 1;
   }
   const note = existing > 0 ? ` (อีก ${existing} นัดมีอยู่แล้ว)` : '';
-  return { summary: `ลงปฏิทิน ${saved} นัดแล้ว${note}` };
+  return {
+    summary: `ลงปฏิทิน ${saved} นัดแล้ว${note}`,
+    ...(unassigned.length > 0 ? { unassignedEventIds: unassigned } : {}),
+  };
 }
 
 async function persistExpense(

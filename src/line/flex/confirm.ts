@@ -56,7 +56,9 @@ function describe(draft: Draft, zone: string): CardContent {
         rows: [
           ...draft.events.map((ev) =>
             row(
-              shortSpan(ev.startAt.setZone(zone), ev.endAt?.setZone(zone)),
+              ev.rrule
+                ? recurrenceLabel(ev.rrule).replace('ทุกวัน', 'ทุก')
+                : shortSpan(ev.startAt.setZone(zone), ev.endAt?.setZone(zone)),
               ev.allDay ? ev.title : `${ev.title} ${ev.startAt.setZone(zone).toFormat('HH:mm')}`,
             ),
           ),

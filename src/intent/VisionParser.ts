@@ -36,6 +36,7 @@ const responseSchema = z.object({
       start_date: z.string(),
       end_date: z.string().nullable(),
       time: z.string().nullable(),
+      repeat_weekday: z.number().int().min(1).max(7).nullable().optional(),
     }),
   ),
   confidence: z.number().min(0).max(1),
@@ -65,7 +66,7 @@ const jsonSchema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['title', 'start_date', 'end_date', 'time'],
+        required: ['title', 'start_date', 'end_date', 'time', 'repeat_weekday'],
         properties: {
           title: { type: 'string', description: 'what happens, in Thai as written, short' },
           start_date: { type: 'string', description: 'YYYY-MM-DD (Gregorian)' },
@@ -74,6 +75,10 @@ const jsonSchema = {
             description: 'YYYY-MM-DD last day of a span such as 1-25 ต.ค., else null',
           },
           time: { type: ['string', 'null'], description: 'HH:mm if a time of day is written, else null' },
+          repeat_weekday: {
+            type: ['integer', 'null'],
+            description: 'for something every week (a class timetable, tutoring): 1 Monday … 7 Sunday; else null',
+          },
         },
       },
     },
@@ -93,6 +98,9 @@ function instructions(today: DateTime): string {
     '  ปี พ.ศ. ให้แปลงเป็น ค.ศ. (ลบ 543, "69" คือ 2569 = 2026) ถ้าไม่เขียนปี ให้ใช้ปีที่ใกล้วันนี้ที่สุด',
     '  ช่วงวัน เช่น "14-22 ก.ย." ใส่ start_date และ end_date, วันเดียวให้ end_date = null',
     '  title เขียนสั้นตามที่เห็น เช่น "สอบปลายภาค", "ปิดภาคเรียน" ไม่ต้องใส่วันที่ใน title',
+    '  ตารางที่เกิดซ้ำทุกสัปดาห์ เช่น ตารางเรียนพิเศษ "ทุกวันเสาร์ 09:00 คณิต" ให้ใส่ repeat_weekday (1=จันทร์ … 7=อาทิตย์)',
+    '  start_date = วันแรกที่เริ่ม (ถ้าไม่ระบุใช้วันนี้), end_date = วันสุดท้ายของคอร์สถ้ามี ไม่ใช่ช่วงวัน',
+    '  ถ้าวิชาเดียวกันวันเดียวกันมีหลายคาบ ให้รวมเป็นรายการเดียวใช้เวลาเริ่มคาบแรก',
     '- รูปอื่นทั้งหมด (รูปคน อาหาร วิว มีม ฯลฯ) → kind = none, events = []',
     '- field ที่ไม่เกี่ยวกับ kind นั้นให้เป็น null',
   ].join('\n');
@@ -220,8 +228,17 @@ const MAX_EVENTS = 15;
  * are left out — a notice sent mid-month still lists the start of it — while
  * a span still under way stays in.
  */
+/** ISO weekday to the RRULE day code. */
+const BYDAY = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'] as const;
+
 export function toSchedule(
-  items: Array<{ title: string; start_date: string; end_date: string | null; time: string | null }>,
+  items: Array<{
+    title: string;
+    start_date: string;
+    end_date: string | null;
+    time: string | null;
+    repeat_weekday?: number | null | undefined;
+  }>,
   confidence: number,
   ctx: FamilyContext,
 ): ParseResult {
@@ -241,6 +258,25 @@ export function toSchedule(
     }
 
     const time = item.time?.match(/^(\d{1,2}):(\d{2})$/);
+    const weekday = item.repeat_weekday ?? null;
+    if (weekday) {
+      // Every week from the first such day on or after the start (never before
+      // today), until the course ends. One appointment with a rule, not twelve.
+      const from = DateTime.max(day, today);
+      let first = from.plus({ days: (weekday - from.weekday + 7) % 7 });
+      if (time) first = first.set({ hour: Number(time[1]), minute: Number(time[2]) });
+      const until = end ? `;UNTIL=${end.endOf('day').toUTC().toFormat("yyyyLLdd'T'HHmmss'Z'")}` : '';
+      events.push({
+        kind: 'event',
+        title,
+        startAt: first,
+        allDay: !time,
+        category: guessEventCategory(title),
+        rrule: `FREQ=WEEKLY;BYDAY=${BYDAY[weekday - 1]}${until}`,
+      });
+      continue;
+    }
+
     const startAt = time ? day.set({ hour: Number(time[1]), minute: Number(time[2]) }) : day;
     events.push({
       kind: 'event',

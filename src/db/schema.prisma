@@ -77,7 +77,9 @@ enum MemberRole {
 model Member {
   id          String     @id @default(cuid())
   familyId    String
-  lineUserId  String
+  /// Null for someone the family keeps track of who is not in the LINE group
+  /// — a child's exams, a grandparent's appointments. They never sign in.
+  lineUserId  String?
   displayName String
   role        MemberRole @default(ADULT)
   birthDate   DateTime?  @db.Date

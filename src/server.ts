@@ -15,6 +15,7 @@ import { createApp } from './line/app.js';
 import { renderDigestImage } from './line/digestImage.js';
 import { DraftStore } from './line/drafts.js';
 import { PhotoTargetStore } from './line/photoTargets.js';
+import { AssignmentStore } from './line/assignments.js';
 import { ReminderEngine, yearMonthOf } from './reminders/engine.js';
 import { computeHealth } from './modules/health.js';
 import { refreshRecurring } from './reminders/generate.js';
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
   const drafts = new DraftStore();
   const exportLinks = new ExportLinkStore();
   const photoTargets = new PhotoTargetStore();
+  const assignments = new AssignmentStore();
   const openai = cfg.aiUsable ? new OpenAI({ apiKey: cfg.OPENAI_API_KEY }) : null;
   const parser = buildParser();
   const rewriter = buildRewriter(cfg, openai);
@@ -112,6 +114,7 @@ async function main(): Promise<void> {
     ...(liffUrl ? { liffUrl } : {}),
     drafts,
     photoTargets,
+    assignments,
     defaultTimezone: cfg.TZ,
     channelSecret: cfg.LINE_CHANNEL_SECRET,
     pendingDrafts: () => drafts.size,
