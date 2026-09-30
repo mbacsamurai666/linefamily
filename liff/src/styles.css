@@ -1644,6 +1644,13 @@ select {
   color: #7a4d06;
 }
 
+/* The form's optional extras sit on their own line, clear of the next label. */
+.money-form .link-button {
+  display: block;
+  text-align: left;
+  margin: 2px 0 10px;
+}
+
 .amount-change {
   align-items: center;
   margin-bottom: 6px;

@@ -177,8 +177,10 @@ export function MoneyForm({
     if (hasAmount && !(amountSatang > 0)) return setError('จำนวนเงินต้องมากกว่า 0');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return setError('ต้องเลือกวันครบกำหนด');
     if (showRange && endsOn && endsOn < day) return setError('วันสิ้นสุดต้องไม่ก่อนวันครบกำหนดแรก');
-    for (const c of changes) {
-      if (!c.effectiveFrom || !(Number(c.amount) > 0)) return setError('ยอดที่เปลี่ยนต้องมีทั้งวันที่และจำนวนเงินมากกว่า 0');
+    // An optional row left blank is simply not there; a half-filled one is a mistake.
+    const filled = changes.filter((c) => c.effectiveFrom || c.amount.trim());
+    for (const c of filled) {
+      if (!c.effectiveFrom || !(Number(c.amount) > 0)) return setError('ยอดที่เปลี่ยนต้องมีทั้งวันที่และจำนวนเงินมากกว่า 0 (หรือกด "ลบ" แถวนั้น)');
     }
 
     const [, mm, dd] = day.split('-').map(Number) as [number, number, number];
@@ -204,7 +206,7 @@ export function MoneyForm({
       endsOn: showRange && endsOn ? endsOn : null,
       note: note.trim() || null,
       categoryName: categoryName || null,
-      amountChanges: changes.map((c) => ({ effectiveFrom: c.effectiveFrom, amountBaht: Number(c.amount) })),
+      amountChanges: filled.map((c) => ({ effectiveFrom: c.effectiveFrom, amountBaht: Number(c.amount) })),
     };
 
     setSaving(true);
