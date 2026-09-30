@@ -1140,6 +1140,82 @@ select {
   color: var(--text-muted);
 }
 
+/* The year's committed costs, month by month. */
+.plan-years {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.plan-years button {
+  border: none;
+  background: var(--surface-muted);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  color: var(--brand-dark);
+}
+
+.plan-month-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: none;
+  padding: 7px 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.plan-month-row.is-empty {
+  color: var(--text-muted);
+}
+
+.plan-month-name {
+  width: 38px;
+  font-weight: 600;
+}
+
+.plan-month-amount {
+  width: 76px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-items {
+  padding: 2px 0 8px 46px;
+}
+
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+
+.plan-item-day {
+  width: 20px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-item-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-item-amount {
+  font-variant-numeric: tabular-nums;
+}
+
 .feed-url {
   font-size: 12px;
   word-break: break-all;

@@ -299,7 +299,9 @@ describe('GET /dashboard', () => {
       netWorth: { loansOutstandingSatang: number; assetsValueSatang: number; depositsSatang: number };
     };
 
-    expect(body.upcoming.today.map((i) => i.text)).toEqual(['นัดวันนี้']);
+    // Contains, not equals: run on the last day of a month, the month-summary
+    // reminder is legitimately due today as well.
+    expect(body.upcoming.today.map((i) => i.text)).toContain('นัดวันนี้');
     expect(body.money).toMatchObject({ incomeSatang: 10000, expenseSatang: 4000, netSatang: 6000 });
     expect(body.netWorth).toMatchObject({
       loansOutstandingSatang: 500000,
@@ -803,7 +805,16 @@ describe('editing and deleting through the API', () => {
       items: Array<{ id: string; name: string; active: boolean }>;
     };
     expect(listed.items).toEqual([
-      { id: bill.id, name: 'ค่าเน็ต', amountSatang: 59900, dueDay: 15, active: true },
+      {
+        id: bill.id,
+        name: 'ค่าเน็ต',
+        amountSatang: 59900,
+        estimateSatang: null,
+        dueDay: 15,
+        everyMonths: 1,
+        dueMonth: null,
+        active: true,
+      },
     ]);
 
     const res = await authed(`/bills/${bill.id}`, {
@@ -1064,5 +1075,36 @@ describe('the calendar feed', () => {
       url: string;
     };
     expect(reset.url).not.toBe(first.url);
+  });
+});
+
+describe('GET /expense-plan', () => {
+  it('answers the year month by month, with what to set aside', async () => {
+    await authed('/bills', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ประกันรถ', amountBaht: 12000, dueDay: 15, everyMonths: 12, dueMonth: 3 }),
+    });
+    await authed('/bills', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'ค่าไฟ', dueDay: 20, estimateBaht: 2500 }),
+    });
+
+    const res = await authed('/expense-plan?year=2026');
+    expect(res.status).toBe(200);
+    const plan = (await res.json()) as {
+      totalSatang: number;
+      perMonthSatang: number;
+      months: Array<{ month: number; dueSatang: number; items: Array<{ name: string; estimated: boolean }> }>;
+    };
+
+    expect(plan.totalSatang).toBe(1_200_000 + 250_000 * 12);
+    expect(plan.perMonthSatang).toBe(Math.round(plan.totalSatang / 12));
+    expect(plan.months[2]?.items.map((i) => i.name)).toEqual(['ประกันรถ', 'ค่าไฟ']);
+    expect(plan.months[3]?.items.map((i) => i.name)).toEqual(['ค่าไฟ']);
+    expect(plan.months[3]?.items[0]?.estimated).toBe(true);
+  });
+
+  it('refuses a year that is not one', async () => {
+    expect((await authed('/expense-plan?year=12')).status).toBe(400);
   });
 });

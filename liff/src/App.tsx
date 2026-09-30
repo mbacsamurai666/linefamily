@@ -5,6 +5,7 @@ import {
   type Asset,
   type AgendaItem,
   type BillItem,
+  type ExpensePlan,
   type ChoreItem,
   type DashboardData,
   type Deposit,
@@ -2112,6 +2113,7 @@ function ManageTab({ focus }: { focus?: SetupKey | null }) {
     <div>
       <DigestSettingsSection />
       <LeadTimesSection />
+      <ExpensePlanSection />
       <BillsSection openAdd={focus === 'bills'} />
       <DocumentsSection openAdd={focus === 'documents'} />
       <MedicationsSection openAdd={focus === 'medications'} />
@@ -2662,6 +2664,145 @@ function BackupSection() {
   );
 }
 
+/**
+ * The year's committed costs, month by month.
+ *
+ * The household's heavy costs are the ones that arrive together — car
+ * insurance, tuition, the loan — so the point of this is to see March coming
+ * in January, and to know what to put aside every month so it is covered.
+ */
+function ExpensePlanSection() {
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(thisYear);
+  const [plan, setPlan] = useState<ExpensePlan | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [openMonth, setOpenMonth] = useState<number | null>(new Date().getMonth() + 1);
+
+  useEffect(() => {
+    setPlan(null);
+    api.expensePlan(year).then(setPlan).catch((e: Error) => setError(e.message));
+  }, [year]);
+
+  if (error) return <p className="error">{error}</p>;
+
+  const heaviest = plan ? Math.max(...plan.months.map((m) => m.dueSatang), 1) : 1;
+
+  return (
+    <div className="dash-section" id="section-expense-plan">
+      <div className="dash-section-heading">📊 ประมาณการค่าใช้จ่าย</div>
+
+      <div className="plan-years">
+        <button type="button" onClick={() => setYear((y) => y - 1)} aria-label="ปีก่อนหน้า">
+          ‹
+        </button>
+        <span>พ.ศ. {year + 543}</span>
+        <button type="button" onClick={() => setYear((y) => y + 1)} aria-label="ปีถัดไป">
+          ›
+        </button>
+      </div>
+
+      {!plan ? (
+        <p className="loading">กำลังโหลด...</p>
+      ) : plan.totalSatang === 0 && plan.missingAmount.length === 0 ? (
+        <p className="empty">ยังไม่มีค่าใช้จ่ายประจำ — ตั้งได้ที่หัวข้อด้านล่าง</p>
+      ) : (
+        <>
+          <div className="money-row">
+            <div className="money-tile">
+              <div className="money-label">รวมทั้งปี</div>
+              <div className="money-value">{baht(plan.totalSatang)}</div>
+            </div>
+            <div className="money-tile money-in">
+              <div className="money-label">ควรกันไว้เดือนละ</div>
+              <div className="money-value">{baht(plan.perMonthSatang)}</div>
+            </div>
+          </div>
+
+          <ul className="list plan-months">
+            {plan.months.map((m) => {
+              const open = openMonth === m.month;
+              return (
+                <li key={m.month} className="plan-month">
+                  <button
+                    type="button"
+                    className={`plan-month-row${m.dueSatang === 0 ? ' is-empty' : ''}`}
+                    onClick={() => setOpenMonth(open ? null : m.month)}
+                    aria-expanded={open}
+                  >
+                    <span className="plan-month-name">{THAI_MONTH_SHORT[m.month - 1]}</span>
+                    <span className="bar-track">
+                      <span className="bar-fill" style={{ width: `${(m.dueSatang / heaviest) * 100}%` }} />
+                    </span>
+                    <span className="plan-month-amount">{m.dueSatang === 0 ? '—' : baht(m.dueSatang)}</span>
+                  </button>
+
+                  {open && m.items.length > 0 && (
+                    <ul className="list plan-items">
+                      {m.items.map((item) => (
+                        <li key={`${item.billId}-${m.month}`} className="plan-item">
+                          <span className="plan-item-day">{item.day}</span>
+                          <span className="plan-item-name">
+                            {item.name}
+                            {item.estimated && <span className="muted"> (ประมาณ)</span>}
+                          </span>
+                          <span className="plan-item-amount">
+                            {item.paid && <span className="pill">จ่ายแล้ว</span>} {baht(item.amountSatang)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          {plan.byCategory.length > 0 && (
+            <>
+              <div className="dash-section-heading">แยกตามหมวด</div>
+              <ul className="list">
+                {plan.byCategory.map((row) => (
+                  <li key={row.category} className="category-row">
+                    <div className="category-name">{row.category}</div>
+                    <div className="bar-track">
+                      <div
+                        className="bar-fill"
+                        style={{ width: `${(row.totalSatang / (plan.byCategory[0]?.totalSatang || 1)) * 100}%` }}
+                      />
+                    </div>
+                    <div className="category-amount">{baht(row.totalSatang)}</div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {plan.missingAmount.length > 0 && (
+            <p className="muted">
+              ยังไม่ได้ใส่ยอด: {plan.missingAmount.join(', ')} — ใส่ยอดประมาณไว้จะคำนวณให้ครบ
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "ทุกวันที่ 5" / "ทุกปี 15 มี.ค." / "ทุก 6 เดือน วันที่ 5". */
+function billCycleLabel(bill: { dueDay: number; everyMonths: number; dueMonth: number | null }): string {
+  if (bill.everyMonths <= 1) return `ทุกวันที่ ${bill.dueDay}`;
+  if (bill.everyMonths === 12) return `ทุกปี ${bill.dueDay} ${THAI_MONTH_SHORT[(bill.dueMonth ?? 1) - 1]}`;
+  return `ทุก ${bill.everyMonths} เดือน วันที่ ${bill.dueDay}`;
+}
+
+/** The cycles a household cost actually comes in. */
+const BILL_CYCLES: Array<[number, string]> = [
+  [1, 'ทุกเดือน'],
+  [3, 'ทุก 3 เดือน'],
+  [6, 'ทุก 6 เดือน'],
+  [12, 'ทุกปี'],
+];
+
 function BillsSection({ openAdd }: { openAdd?: boolean }) {
   const [bills, setBills] = useState<BillItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2669,6 +2810,9 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [dueDay, setDueDay] = useState('');
+  const [everyMonths, setEveryMonths] = useState(1);
+  const [dueMonth, setDueMonth] = useState(1);
+  const [estimate, setEstimate] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -2681,7 +2825,10 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
     setEditingId(bill.id);
     setName(bill.name);
     setAmount(bill.amountSatang === null ? '' : String(bill.amountSatang / 100));
+    setEstimate(bill.estimateSatang === null ? '' : String(bill.estimateSatang / 100));
     setDueDay(String(bill.dueDay));
+    setEveryMonths(bill.everyMonths);
+    setDueMonth(bill.dueMonth ?? 1);
     setShowAdd(true);
   };
 
@@ -2690,7 +2837,10 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
     setEditingId(null);
     setName('');
     setAmount('');
+    setEstimate('');
     setDueDay('');
+    setEveryMonths(1);
+    setDueMonth(1);
   };
 
   const add = async (e: React.FormEvent) => {
@@ -2699,6 +2849,9 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
     if (!name.trim() || !Number.isInteger(day) || day < 1 || day > 31) return;
     const amountBaht = Number(amount);
     const hasAmount = Number.isFinite(amountBaht) && amountBaht > 0;
+    const estimateBaht = Number(estimate);
+    const hasEstimate = Number.isFinite(estimateBaht) && estimateBaht > 0;
+    const cycle = { everyMonths, ...(everyMonths > 1 ? { dueMonth } : {}) };
 
     setSaving(true);
     try {
@@ -2708,12 +2861,17 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
           name: name.trim(),
           dueDay: day,
           amountBaht: hasAmount ? amountBaht : null,
+          estimateBaht: hasEstimate ? estimateBaht : null,
+          ...cycle,
+          ...(everyMonths === 1 ? { dueMonth: null } : {}),
         });
       } else {
         await api.addBill({
           name: name.trim(),
           dueDay: day,
           ...(hasAmount ? { amountBaht } : {}),
+          ...(hasEstimate ? { estimateBaht } : {}),
+          ...cycle,
         });
       }
       closeForm();
@@ -2728,11 +2886,13 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
 
   return (
     <div className="dash-section" id="section-bills">
-      <div className="dash-section-heading">🧾 บิลประจำเดือน</div>
+      <div className="dash-section-heading">🧾 ค่าใช้จ่ายประจำ</div>
       {!bills ? (
         <p className="loading">กำลังโหลด...</p>
       ) : bills.length === 0 ? (
-        <p className="empty">ยังไม่มีบิล — พิมพ์ "ตั้งบิล ค่าไฟ 800 ทุกวันที่ 5" ในแชทได้เลย</p>
+        <p className="empty">
+          ยังไม่มีค่าใช้จ่ายประจำ — พิมพ์ "ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค." ในแชทได้เลย
+        </p>
       ) : (
         <ul className="list">
           {bills.map((bill) => (
@@ -2743,8 +2903,12 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
                   <div>
                     <div>{bill.name}</div>
                     <div className="muted">
-                      ทุกวันที่ {bill.dueDay} ·{' '}
-                      {bill.amountSatang === null ? 'ยอดตามบิล' : `${baht(bill.amountSatang)} บาท`}
+                      {billCycleLabel(bill)} ·{' '}
+                      {bill.amountSatang !== null
+                        ? `${baht(bill.amountSatang)} บาท`
+                        : bill.estimateSatang !== null
+                          ? `ประมาณ ${baht(bill.estimateSatang)} บาท`
+                          : 'ยอดตามบิล'}
                     </div>
                   </div>
                 </div>
@@ -2814,18 +2978,66 @@ function BillsSection({ openAdd }: { openAdd?: boolean }) {
               />
             </div>
           </div>
+
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="bill-cycle">มาบ่อยแค่ไหน</label>
+              <select
+                id="bill-cycle"
+                value={everyMonths}
+                onChange={(e) => setEveryMonths(Number(e.target.value))}
+              >
+                {BILL_CYCLES.map(([months, label]) => (
+                  <option key={months} value={months}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {everyMonths > 1 && (
+              <div className="field">
+                <label htmlFor="bill-month">เริ่มเดือน</label>
+                <select id="bill-month" value={dueMonth} onChange={(e) => setDueMonth(Number(e.target.value))}>
+                  {THAI_MONTH_SHORT.map((label, i) => (
+                    <option key={label} value={i + 1}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {!amount && (
+            <div className="field">
+              <label htmlFor="bill-estimate">
+                ยอดประมาณต่อครั้ง (บาท) <span className="optional">(ไม่บังคับ)</span>
+              </label>
+              <input
+                id="bill-estimate"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="เช่น 2500 — ใช้คำนวณประมาณการ"
+                value={estimate}
+                onChange={(e) => setEstimate(e.target.value)}
+              />
+            </div>
+          )}
+
           <div className="field-row">
             <button type="button" className="form-toggle" onClick={closeForm}>
               ยกเลิก
             </button>
             <button type="submit" className="form-submit" disabled={saving}>
-              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งบิล'}
+              {saving ? 'กำลังบันทึก...' : editingId ? 'บันทึกการแก้ไข' : 'ตั้งค่าใช้จ่ายประจำ'}
             </button>
           </div>
         </form>
       ) : (
         <button type="button" className="form-toggle" onClick={() => setShowAdd(true)}>
-          ＋ ตั้งบิลใหม่
+          ＋ ตั้งค่าใช้จ่ายประจำ
         </button>
       )}
     </div>

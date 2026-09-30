@@ -48,7 +48,8 @@ const WEEKDAYS: Record<string, number> = {
   อาทิตย์: 7,
 };
 
-const MONTHS: Record<string, number> = {
+/** Thai month names, long and short, to their number. */
+export const MONTHS: Record<string, number> = {
   มกราคม: 1, 'ม.ค.': 1, มค: 1, มกรา: 1,
   กุมภาพันธ์: 2, 'ก.พ.': 2, กพ: 2, กุมภา: 2,
   มีนาคม: 3, 'มี.ค.': 3, มีค: 3, มีนา: 3,
@@ -75,7 +76,8 @@ function alternation(keys: string[]): string {
 }
 
 const WEEKDAY_ALT = alternation(Object.keys(WEEKDAYS));
-const MONTH_ALT = alternation(Object.keys(MONTHS));
+/** Every spelling of a month, longest first, for embedding in a pattern. */
+export const MONTH_ALT = alternation(Object.keys(MONTHS));
 
 // ------------------------------------------------------------------ years
 

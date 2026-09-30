@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js';
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
+import { computeExpensePlan } from '../modules/expensePlan.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import {
   computeNetWorth,
@@ -169,10 +170,18 @@ const eventBody = z.object({
   rrule: z.string().optional(),
 });
 
+/** 1 monthly, 3 or 6 for a premium or a school term, 12 for a yearly one. */
+const billCycle = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(6), z.literal(12)]);
+
 const billBody = z.object({
   name: z.string().min(1),
   amountBaht: z.number().positive().optional(),
   dueDay: z.number().int().min(1).max(31),
+  everyMonths: billCycle.optional(),
+  /** Which month of the cycle it lands in, 1-12; only read when everyMonths > 1. */
+  dueMonth: z.number().int().min(1).max(12).optional(),
+  /** What to plan for when the charge varies month to month. */
+  estimateBaht: z.number().positive().optional(),
 });
 
 const documentBody = z.object({
@@ -299,6 +308,9 @@ const billPatchBody = z.object({
   name: z.string().min(1).optional(),
   amountBaht: z.number().positive().nullable().optional(),
   dueDay: z.number().int().min(1).max(31).optional(),
+  everyMonths: billCycle.optional(),
+  dueMonth: z.number().int().min(1).max(12).nullable().optional(),
+  estimateBaht: z.number().positive().nullable().optional(),
   active: z.boolean().optional(),
 });
 
@@ -608,6 +620,17 @@ export function createApiRouter(deps: ApiDeps) {
       /** What a phone's calendar app expects, so tapping it offers to subscribe. */
       webcalUrl: `${base.replace(/^https?:/, 'webcal:')}/calendar/${token}.ics`,
     });
+  });
+
+  /** What the household is committed to paying, month by month. */
+  app.get('/expense-plan', async (c) => {
+    const member = c.get('member');
+    const now = DateTime.now().setZone(member.timezone);
+    const year = Number(c.req.query('year') ?? now.year);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return c.json({ error: 'year must be a calendar year' }, 400);
+    }
+    return c.json(await computeExpensePlan(deps.prisma, member.familyId, year, member.timezone, now));
   });
 
   app.get('/agenda', async (c) => {
@@ -1102,7 +1125,10 @@ export function createApiRouter(deps: ApiDeps) {
         id: b.id,
         name: b.name,
         amountSatang: b.amount,
+        estimateSatang: b.estimateAmount,
         dueDay: b.dueDay,
+        everyMonths: b.everyMonths,
+        dueMonth: b.dueMonth,
         active: b.active,
       })),
     });
@@ -1119,6 +1145,11 @@ export function createApiRouter(deps: ApiDeps) {
         kind: 'bill',
         name: parsed.data.name,
         dueDay: parsed.data.dueDay,
+        ...(parsed.data.everyMonths !== undefined ? { everyMonths: parsed.data.everyMonths } : {}),
+        ...(parsed.data.dueMonth !== undefined ? { dueMonth: parsed.data.dueMonth } : {}),
+        ...(parsed.data.estimateBaht !== undefined
+          ? { estimateAmount: Math.round(parsed.data.estimateBaht * 100) }
+          : {}),
         ...(parsed.data.amountBaht !== undefined
           ? { amount: Math.round(parsed.data.amountBaht * 100) }
           : {}),
@@ -1133,11 +1164,14 @@ export function createApiRouter(deps: ApiDeps) {
     const parsed = billPatchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
 
-    const { amountBaht, ...rest } = parsed.data;
+    const { amountBaht, estimateBaht, ...rest } = parsed.data;
     const ok = await updateBill(recordCtx(c.get('member')), c.req.param('id'), {
       ...definedOnly(rest),
       ...(amountBaht !== undefined
         ? { amount: amountBaht === null ? null : Math.round(amountBaht * 100) }
+        : {}),
+      ...(estimateBaht !== undefined
+        ? { estimateAmount: estimateBaht === null ? null : Math.round(estimateBaht * 100) }
         : {}),
     });
     return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);

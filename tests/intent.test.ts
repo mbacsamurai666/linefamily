@@ -572,3 +572,45 @@ describe('work goes to the task board', () => {
     }
   });
 });
+
+/** The costs that are not monthly: insurance, tuition, the condo fee. */
+describe('recurring costs that come round less often', () => {
+  const rule = new RuleIntentParser();
+  const bill = async (text: string) => {
+    const r = await rule.parse(text, ctx);
+    if (r.kind !== 'bill' || r.draft.kind !== 'bill') throw new Error(`not a bill: ${text}`);
+    return r.draft;
+  };
+
+  it('reads a yearly premium with the month it falls in', async () => {
+    expect(await bill('ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค.')).toMatchObject({
+      name: 'ประกันรถ',
+      amount: 1_200_000,
+      everyMonths: 12,
+      dueMonth: 3,
+      dueDay: 15,
+    });
+  });
+
+  it('reads a cost that comes every few months', async () => {
+    expect(await bill('ตั้งค่าใช้จ่ายประจำ ค่าเทอม 25000 ทุก 6 เดือน วันที่ 5')).toMatchObject({
+      everyMonths: 6,
+      dueDay: 5,
+      amount: 2_500_000,
+    });
+  });
+
+  it('keeps a plain monthly bill monthly', async () => {
+    const monthly = await bill('ตั้งบิล ค่าส่วนกลาง 1500 ทุกวันที่ 1');
+    expect(monthly.everyMonths).toBeUndefined();
+    expect(monthly.dueDay).toBe(1);
+  });
+
+  it('takes an estimate for a charge that varies', async () => {
+    expect(await bill('ตั้งค่าใช้จ่ายประจำ ค่าไฟ ประมาณ 2500 ทุกวันที่ 20')).toMatchObject({
+      name: 'ค่าไฟ',
+      estimateAmount: 250_000,
+      dueDay: 20,
+    });
+  });
+});

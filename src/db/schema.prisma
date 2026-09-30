@@ -264,6 +264,18 @@ model Bill {
   /// Day of month the bill is due, 1-31 (clamped to month length).
   dueDay Int
 
+  /// How often it falls due, in months: 1 monthly (the common case), 3 or 6
+  /// for an insurance premium or a school term, 12 for a yearly one.
+  everyMonths Int @default(1)
+
+  /// Which month of the cycle it lands in, 1-12. Only meaningful when
+  /// everyMonths > 1 — car insurance due every March is 12 and 3.
+  dueMonth Int?
+
+  /// What to plan for when the amount varies month to month (water, power).
+  /// Never charged or recorded — it only feeds the year's estimate.
+  estimateAmount Int?
+
   /// Create a Transaction automatically when marked paid.
   autoCreateTx Boolean @default(true)
   categoryId   String?

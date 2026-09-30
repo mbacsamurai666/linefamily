@@ -1,4 +1,4 @@
-import { parseThaiDateTime, stripMatched } from '../thai/date.js';
+import { MONTH_ALT, MONTHS, parseThaiDateTime, stripMatched } from '../thai/date.js';
 import { normalizeThaiDigits, parseAmountToSatang } from '../thai/number.js';
 import { matchRecurrence } from '../thai/recurrence.js';
 import { guessAssetCategory } from './assetTypes.js';
@@ -30,8 +30,19 @@ const SHOPPING_PREFIX = /^(?:ซื้อของ|รายการซื้�
 /** A number token: Arabic with separators, or spelled out in Thai. */
 const AMOUNT_TOKEN = /(\d[\d,]*(?:\.\d{1,2})?|[ก-๛]+)\s*บาท|(\d[\d,]*(?:\.\d{1,2})?)/;
 
-const BILL_PREFIX = /^(?:ตั้งบิล|เพิ่มบิล|บิลใหม่|บิลประจำเดือน)\s*[:：]?\s*/;
+const BILL_PREFIX =
+  /^(?:ตั้งบิล|เพิ่มบิล|บิลใหม่|บิลประจำเดือน|ตั้งค่าใช้จ่ายประจำ|ค่าใช้จ่ายประจำ)\s*[:：]?\s*/;
 const DUE_DAY = /ทุก\s?วันที่\s*(\d{1,2})/;
+
+/**
+ * How often a recurring cost comes round: "ทุกปี 15 มี.ค.", "ทุก 6 เดือน
+ * วันที่ 5", "ทุก 3 เดือน". Car insurance and tuition are not monthly bills,
+ * and treating them as one is what made the family's March a surprise.
+ */
+const CYCLE_YEARLY = new RegExp(`ทุก\\s?ปี\\s*(?:วันที่\\s*)?(\\d{1,2})?\\s*(${MONTH_ALT})?`);
+const CYCLE_MONTHS = /ทุก\s?(\d{1,2})\s?เดือน(?:\s*วันที่\s*(\d{1,2}))?/;
+/** "ประมาณ 2500" — a guess to plan with, for a charge that varies. */
+const ESTIMATE = /ประมาณ\s*([\d,]+(?:\.\d+)?)/;
 
 const MED_PREFIX = /^(?:ตั้งยา|เพิ่มยา|ยาใหม่)\s*[:：]?\s*/;
 const MED_TIMES = /เวลา\s*(.+)$/;
@@ -117,14 +128,27 @@ function matchBill(text: string): ParseResult {
 
   const rest = text.slice(prefix[0].length);
 
+  const yearly = rest.match(CYCLE_YEARLY);
+  const everyN = yearly ? null : rest.match(CYCLE_MONTHS);
   const dueDayMatch = rest.match(DUE_DAY);
-  if (!dueDayMatch) return { kind: 'unknown' };
-  const dueDay = Number(dueDayMatch[1]);
+  if (!dueDayMatch && !yearly && !everyN) return { kind: 'unknown' };
+
+  const everyMonths = yearly ? 12 : everyN ? Number(everyN[1]) : 1;
+  if (!Number.isInteger(everyMonths) || everyMonths < 1 || everyMonths > 12) return { kind: 'unknown' };
+  const dueMonth = yearly?.[2] ? MONTHS[yearly[2]] : undefined;
+  const dueDay = Number(dueDayMatch?.[1] ?? yearly?.[1] ?? everyN?.[2] ?? 1);
   if (dueDay < 1 || dueDay > 31) return { kind: 'unknown' };
 
-  // The due-day digits have to be removed before hunting for an amount, or
+  // The cycle's digits have to be removed before hunting for an amount, or
   // "ทุกวันที่ 15" gets misread as a 15-baht bill.
-  const withoutDueDay = rest.replace(dueDayMatch[0], ' ');
+  const withoutCycle = rest
+    .replace(dueDayMatch?.[0] ?? '', ' ')
+    .replace(yearly?.[0] ?? '', ' ')
+    .replace(everyN?.[0] ?? '', ' ');
+
+  const estimateMatch = withoutCycle.match(ESTIMATE);
+  const estimateAmount = estimateMatch ? parseAmountToSatang(estimateMatch[1] as string) : null;
+  const withoutDueDay = estimateMatch ? withoutCycle.replace(estimateMatch[0], ' ') : withoutCycle;
 
   const amountMatch = withoutDueDay.match(AMOUNT_TOKEN);
   const amountRaw = amountMatch ? (amountMatch[1] ?? amountMatch[2]) : undefined;
@@ -144,7 +168,10 @@ function matchBill(text: string): ParseResult {
       kind: 'bill',
       name,
       dueDay,
+      ...(everyMonths !== 1 ? { everyMonths } : {}),
+      ...(dueMonth !== undefined ? { dueMonth } : {}),
       ...(amount !== null && amount > 0 ? { amount } : {}),
+      ...(estimateAmount !== null && estimateAmount > 0 ? { estimateAmount } : {}),
     },
   };
 }

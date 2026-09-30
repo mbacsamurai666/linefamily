@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { computeNetBalances, settleUp } from './debts.js';
+import { computeExpensePlan } from './expensePlan.js';
 import { computeExpenseSummary } from './expenseSummary.js';
 import { announcedHolidaysKnown } from '../thai/holidays.js';
 import { computeHealth } from './health.js';
@@ -38,7 +39,7 @@ import { parseThaiDateTime } from '../thai/date.js';
 import { expandOccurrences } from '../reminders/occurrences.js';
 import { entryDays, listCalendar } from './calendar.js';
 import { ASSET_CATEGORY_LABEL } from '../intent/assetTypes.js';
-import { formatThaiDate, formatThaiTime } from '../line/format.js';
+import { THAI_MONTHS, formatThaiDate, formatThaiTime } from '../line/format.js';
 import { parseAmountToSatang, formatSatang, normalizeThaiDigits } from '../thai/number.js';
 
 /**
@@ -70,6 +71,10 @@ const SET_ALLERGIES = /^แพ้ยา\s+(.+)$/;
 const SET_CONDITIONS = /^โรคประจำตัว\s+(.+)$/;
 const SET_BUDGET = /^ตั้งงบ\s+(.+?)\s+([\d,๐-๙]+(?:\.\d{1,2})?)\s*(?:บาท)?(?:\s*\/\s*เดือน)?$/;
 const DEBT_SUMMARY = /^(?:สรุปหนี้|ใครติดใคร|สรุปยอดหักลบ)$/;
+/** "ประมาณการ" / "ประมาณการปีนี้" / "ค่าใช้จ่ายประจำปี" — the year ahead. */
+const EXPENSE_PLAN = /^(?:ประมาณการ(?:ค่าใช้จ่าย)?(?:ปีนี้|ปีหน้า)?|ค่าใช้จ่ายประจำปี)$/;
+/** "เดือนนี้ต้องจ่ายอะไรบ้าง" — the month's own commitments. */
+const MONTH_DUE = /^(?:เดือนนี้ต้องจ่ายอะไร(?:บ้าง)?|ต้องจ่ายอะไรบ้าง|ค่าใช้จ่ายเดือนนี้)$/;
 const LOAN_SUMMARY = /^สรุปเงินกู้$/;
 const ASSET_SUMMARY = /^สรุปทรัพย์สิน$/;
 const DEPOSIT_SUMMARY = /^สรุปเงินฝาก$/;
@@ -101,6 +106,8 @@ export function classifyCommand(text: string): 'read' | 'act' | null {
   const reads = [
     EMERGENCY_INFO,
     DEBT_SUMMARY,
+    EXPENSE_PLAN,
+    MONTH_DUE,
     LOAN_SUMMARY,
     ASSET_SUMMARY,
     DEPOSIT_SUMMARY,
@@ -166,6 +173,8 @@ export async function tryDirectCommand(
   if (budget) return handleSetBudget(ctx, budget[1] as string, budget[2] as string);
 
   if (DEBT_SUMMARY.test(text)) return handleDebtSummary(ctx);
+  if (EXPENSE_PLAN.test(text)) return handleExpensePlan(ctx, text.includes('ปีหน้า'));
+  if (MONTH_DUE.test(text)) return handleMonthDue(ctx);
   if (LOAN_SUMMARY.test(text)) return handleLoanSummary(ctx);
   if (ASSET_SUMMARY.test(text)) return handleAssetSummary(ctx);
   if (DEPOSIT_SUMMARY.test(text)) return handleDepositSummary(ctx);
@@ -503,6 +512,75 @@ async function handleSetBudget(
   return {
     reply: `ตั้งงบ "${name}" เดือนนี้ที่ ${formatSatang(limitAmount)} บาท แล้วครับ (ใช้ต่อไปทุกเดือนจนกว่าจะเปลี่ยน)`,
   };
+}
+
+/**
+ * The year's committed costs: which months are heavy, and what to put aside
+ * every month so the heavy ones are already covered when they arrive.
+ */
+async function handleExpensePlan(ctx: CommandContext, nextYear: boolean): Promise<CommandResult> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const year = ctx.now.year + (nextYear ? 1 : 0);
+  const plan = await computeExpensePlan(ctx.prisma, ctx.familyId, year, zone, ctx.now);
+
+  // Costs with no amount yet are still worth saying out loud.
+  if (plan.totalSatang === 0 && plan.missingAmount.length === 0) {
+    return {
+      reply:
+        'ยังไม่มีค่าใช้จ่ายประจำให้ประมาณการครับ\nตั้งได้เช่น: ตั้งค่าใช้จ่ายประจำ ประกันรถ 12000 ทุกปี 15 มี.ค.',
+    };
+  }
+
+  const heaviest = [...plan.months].sort((a, b) => b.dueSatang - a.dueSatang).slice(0, 3);
+  const lines = [
+    `📊 ประมาณการค่าใช้จ่ายประจำ ปี ${year + 543}`,
+    `รวมทั้งปี ${formatSatang(plan.totalSatang)} บาท`,
+    `ควรกันไว้เดือนละ ${formatSatang(plan.perMonthSatang)} บาท`,
+    '',
+    'เดือนที่หนักที่สุด',
+    ...heaviest
+      .filter((m) => m.dueSatang > 0)
+      .map((m) => `• ${THAI_MONTHS[m.month - 1]} ${formatSatang(m.dueSatang)} บาท (${m.items.length} รายการ)`),
+  ];
+
+  if (plan.byCategory.length > 0) {
+    lines.push('', 'แยกตามหมวด');
+    for (const row of plan.byCategory.slice(0, 6)) {
+      lines.push(`• ${row.category} ${formatSatang(row.totalSatang)} บาท`);
+    }
+  }
+  if (plan.missingAmount.length > 0) {
+    lines.push('', `ยังไม่ได้ใส่ยอด: ${plan.missingAmount.join(', ')} — ใส่ยอดประมาณไว้จะคำนวณให้ครบ`);
+  }
+
+  return { reply: lines.join('\n') };
+}
+
+/** "เดือนนี้ต้องจ่ายอะไรบ้าง" — what is still owed this month, and what is done. */
+async function handleMonthDue(ctx: CommandContext): Promise<CommandResult> {
+  const zone = ctx.now.zoneName ?? 'Asia/Bangkok';
+  const plan = await computeExpensePlan(ctx.prisma, ctx.familyId, ctx.now.year, zone, ctx.now);
+  const month = plan.months[ctx.now.month - 1];
+
+  if (!month || month.items.length === 0) {
+    return { reply: `เดือน${THAI_MONTHS[ctx.now.month - 1]}ไม่มีค่าใช้จ่ายประจำครับ` };
+  }
+
+  const left = month.items.filter((i) => !i.paid);
+  const leftSatang = left.reduce((sum, i) => sum + i.amountSatang, 0);
+  const lines = [
+    `💸 ค่าใช้จ่ายประจำเดือน${THAI_MONTHS[ctx.now.month - 1]} ${formatSatang(month.dueSatang)} บาท`,
+    ...month.items.map(
+      (i) =>
+        `${i.paid ? '✅' : '•'} วันที่ ${i.day} ${i.name} ${formatSatang(i.amountSatang)} บาท${
+          i.estimated ? ' (ประมาณ)' : ''
+        }`,
+    ),
+  ];
+  if (left.length > 0) lines.push('', `ยังไม่จ่าย ${left.length} รายการ รวม ${formatSatang(leftSatang)} บาท`);
+  else lines.push('', 'จ่ายครบแล้วครับ 🎉');
+
+  return { reply: lines.join('\n') };
 }
 
 async function handleDebtSummary(ctx: CommandContext): Promise<CommandResult> {

@@ -13,6 +13,7 @@ import {
   generateMonthSummaryJob,
   generateTaskJobs,
 } from '../reminders/generate.js';
+import { THAI_MONTHS } from '../line/format.js';
 import { familyLeadTimes } from './leadTimes.js';
 
 /**
@@ -236,6 +237,9 @@ async function persistBill(
       familyId: ctx.familyId,
       name: draft.name,
       dueDay: draft.dueDay,
+      ...(draft.everyMonths !== undefined ? { everyMonths: draft.everyMonths } : {}),
+      ...(draft.dueMonth !== undefined ? { dueMonth: draft.dueMonth } : {}),
+      ...(draft.estimateAmount !== undefined ? { estimateAmount: draft.estimateAmount } : {}),
       reminderOffsets: (await familyLeadTimes(ctx.prisma, ctx.familyId)).bill,
       ...(draft.amount !== undefined ? { amount: draft.amount } : {}),
     },
@@ -243,7 +247,14 @@ async function persistBill(
 
   await generateBillJobs(ctx.prisma, bill.id, ctx.now);
 
-  return { summary: `ตั้งบิล "${draft.name}" ทุกวันที่ ${draft.dueDay} แล้ว` };
+  const every = draft.everyMonths ?? 1;
+  const when =
+    every === 1
+      ? `ทุกวันที่ ${draft.dueDay}`
+      : every === 12
+        ? `ทุกปี ${draft.dueDay} ${THAI_MONTHS[(draft.dueMonth ?? 1) - 1]}`
+        : `ทุก ${every} เดือน วันที่ ${draft.dueDay}`;
+  return { summary: `ตั้งค่าใช้จ่ายประจำ "${draft.name}" ${when} แล้ว` };
 }
 
 async function persistDocument(

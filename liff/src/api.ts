@@ -223,8 +223,34 @@ export interface BillItem {
   id: string;
   name: string;
   amountSatang: number | null;
+  /** What to plan for when the charge varies month to month. */
+  estimateSatang: number | null;
   dueDay: number;
+  /** 1 monthly, 3 or 6 for a premium or a school term, 12 for a yearly one. */
+  everyMonths: number;
+  /** Which month of the cycle it lands in, 1-12; only set when everyMonths > 1. */
+  dueMonth: number | null;
   active: boolean;
+}
+
+export interface PlannedItem {
+  billId: string;
+  name: string;
+  category: string | null;
+  amountSatang: number;
+  estimated: boolean;
+  day: number;
+  paid: boolean;
+}
+
+export interface ExpensePlan {
+  year: number;
+  months: Array<{ month: number; dueSatang: number; paidSatang: number; items: PlannedItem[] }>;
+  totalSatang: number;
+  /** The year's total spread evenly — what to put aside each month. */
+  perMonthSatang: number;
+  byCategory: Array<{ category: string; totalSatang: number }>;
+  missingAmount: string[];
 }
 
 export interface DocumentItem {
@@ -405,12 +431,29 @@ export const api = {
   deleteTransaction: (id: string) => request(`/transactions/${id}`, { method: 'DELETE' }),
 
   bills: () => request<{ items: BillItem[] }>('/bills'),
-  addBill: (body: { name: string; amountBaht?: number; dueDay: number }) =>
-    request('/bills', { method: 'POST', body: JSON.stringify(body) }),
+  addBill: (body: {
+    name: string;
+    amountBaht?: number;
+    dueDay: number;
+    everyMonths?: number;
+    dueMonth?: number;
+    estimateBaht?: number;
+  }) => request('/bills', { method: 'POST', body: JSON.stringify(body) }),
   updateBill: (
     id: string,
-    body: { name?: string; amountBaht?: number | null; dueDay?: number; active?: boolean },
+    body: {
+      name?: string;
+      amountBaht?: number | null;
+      dueDay?: number;
+      everyMonths?: number;
+      dueMonth?: number | null;
+      estimateBaht?: number | null;
+      active?: boolean;
+    },
   ) => request(`/bills/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** What the household is committed to paying, month by month. */
+  expensePlan: (year?: number) =>
+    request<ExpensePlan>(`/expense-plan${year ? `?year=${year}` : ''}`),
   deleteBill: (id: string) => request(`/bills/${id}`, { method: 'DELETE' }),
 
   documents: () => request<{ items: DocumentItem[] }>('/documents'),

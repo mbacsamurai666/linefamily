@@ -334,6 +334,12 @@ export interface BillPatch {
   /** Satang; null for a bill whose amount varies month to month. */
   amount?: number | null;
   dueDay?: number;
+  /** Months between one due date and the next: 1 monthly, 12 yearly. */
+  everyMonths?: number;
+  /** Which month of the cycle it lands in, 1-12; null goes back to none. */
+  dueMonth?: number | null;
+  /** Satang to plan for when the amount varies; null clears the estimate. */
+  estimateAmount?: number | null;
   active?: boolean;
 }
 
@@ -354,6 +360,9 @@ export async function updateBill(
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.amount !== undefined ? { amount: patch.amount } : {}),
       ...(patch.dueDay !== undefined ? { dueDay: patch.dueDay } : {}),
+      ...(patch.everyMonths !== undefined ? { everyMonths: patch.everyMonths } : {}),
+      ...(patch.dueMonth !== undefined ? { dueMonth: patch.dueMonth } : {}),
+      ...(patch.estimateAmount !== undefined ? { estimateAmount: patch.estimateAmount } : {}),
       ...(patch.active !== undefined ? { active: patch.active } : {}),
     },
   });

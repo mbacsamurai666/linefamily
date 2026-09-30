@@ -69,6 +69,12 @@ export interface BillDraft {
   /** Satang. Omitted when the amount varies month to month. */
   amount?: number;
   dueDay: number;
+  /** Months between one due date and the next: 1 monthly, 12 yearly. */
+  everyMonths?: number;
+  /** Which month of the cycle it lands in, 1-12. */
+  dueMonth?: number;
+  /** Satang to plan for when the amount varies. */
+  estimateAmount?: number;
 }
 
 export interface DocumentDraft {

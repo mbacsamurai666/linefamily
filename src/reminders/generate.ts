@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { CATEGORY_LABEL, type EventCategory } from '../intent/categories.js';
 import { formatRelativeDay, formatThaiDateTime, formatThaiSpan } from '../line/format.js';
+import { fallsDue } from '../modules/expensePlan.js';
 import { computeExpenseSummary } from '../modules/expenseSummary.js';
 import { formatSatang } from '../thai/number.js';
 import { recurrenceLabel } from '../thai/recurrence.js';
@@ -206,8 +207,12 @@ export async function generateBillJobs(
 
   const jobs: Array<{ familyId: string; dueAt: Date; text: string; at: Date }> = [];
 
-  for (let i = 0; i < monthsAhead; i++) {
+  // A yearly premium has to be looked for further ahead than a monthly bill.
+  const horizon = Math.max(monthsAhead, bill.everyMonths + 1);
+  for (let i = 0; i < horizon; i++) {
     const month = now.setZone(zone).plus({ months: i });
+    // Every third or twelfth month for a premium; every month for a bill.
+    if (!fallsDue(month.month, bill.everyMonths, bill.dueMonth)) continue;
     // A bill "due on the 31st" still has to land in February.
     const day = Math.min(bill.dueDay, month.daysInMonth ?? 28);
     const due = month.set({ day, hour: 9, minute: 0, second: 0, millisecond: 0 });

@@ -663,3 +663,65 @@ describe('appointments read off a photo', () => {
     expect(await db.prisma.event.count({ where: { familyId } })).toBe(2);
   });
 });
+
+describe('the family’s expense plan', () => {
+  const setUp = async () => {
+    const ctxNow = { prisma: db.prisma, familyId, memberId, now: NOW };
+    // A yearly premium, a school term twice a year, and two monthly costs.
+    await persistDraft(
+      { kind: 'bill', name: 'ประกันรถ', amount: 1_200_000, dueDay: 15, everyMonths: 12, dueMonth: 3 },
+      ctxNow,
+    );
+    await persistDraft(
+      { kind: 'bill', name: 'ค่าเทอม', amount: 2_500_000, dueDay: 5, everyMonths: 6, dueMonth: 5 },
+      ctxNow,
+    );
+    await persistDraft({ kind: 'bill', name: 'ค่าส่วนกลาง', amount: 150_000, dueDay: 1 }, ctxNow);
+    // A varying charge planned from the family's own estimate.
+    await persistDraft(
+      { kind: 'bill', name: 'ค่าไฟ', dueDay: 20, estimateAmount: 250_000 },
+      ctxNow,
+    );
+  };
+
+  it('spreads each cost over the months it actually falls due', async () => {
+    await setUp();
+    const { computeExpensePlan } = await import('../../src/modules/expensePlan.js');
+    const plan = await computeExpensePlan(db.prisma, familyId, 2026, ZONE, NOW);
+
+    const due = (month: number) => plan.months[month - 1]!.dueSatang;
+    // Monthly costs only.
+    expect(due(1)).toBe(150_000 + 250_000);
+    // March carries the car insurance too.
+    expect(due(3)).toBe(150_000 + 250_000 + 1_200_000);
+    // The school term lands in May and again in November.
+    expect(due(5)).toBe(150_000 + 250_000 + 2_500_000);
+    expect(due(11)).toBe(150_000 + 250_000 + 2_500_000);
+    expect(due(6)).toBe(150_000 + 250_000);
+
+    expect(plan.totalSatang).toBe((150_000 + 250_000) * 12 + 1_200_000 + 2_500_000 * 2);
+    expect(plan.perMonthSatang).toBe(Math.round(plan.totalSatang / 12));
+    expect(plan.months[3]!.items.map((i) => i.name)).toEqual(['ค่าส่วนกลาง', 'ค่าไฟ']);
+    // The electricity bill is planned from a guess, and says so.
+    expect(plan.months[0]!.items.find((i) => i.name === 'ค่าไฟ')?.estimated).toBe(true);
+  });
+
+  it('answers what the year and the month come to', async () => {
+    await setUp();
+
+    const year = await tryDirectCommand('ประมาณการ', ctx());
+    expect(year?.reply).toContain('รวมทั้งปี');
+    expect(year?.reply).toContain('ควรกันไว้เดือนละ');
+    expect(year?.reply).toContain('มี.ค.');
+
+    const month = await tryDirectCommand('เดือนนี้ต้องจ่ายอะไรบ้าง', ctx());
+    expect(month?.reply).toContain('ค่าส่วนกลาง');
+    expect(month?.reply).toContain('ยังไม่จ่าย');
+  });
+
+  it('says which costs it could not count', async () => {
+    await persistDraft({ kind: 'bill', name: 'ค่าน้ำ', dueDay: 10 }, { prisma: db.prisma, familyId, memberId, now: NOW });
+    const reply = (await tryDirectCommand('ประมาณการ', ctx()))?.reply ?? '';
+    expect(reply).toContain('ยังไม่ได้ใส่ยอด: ค่าน้ำ');
+  });
+});
