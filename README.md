@@ -263,6 +263,19 @@ node node_modules/vitest/vitest.mjs run
 ดู [DEPLOY.md](DEPLOY.md) — มี `Dockerfile` (บอท + หน้า LIFF ในอิมเมจเดียว, รัน `prisma migrate deploy`
 ตอนบูต) และขั้นตอนสำหรับ Railway หรือ Fly.io
 
+### โฮสต์ฟรีบน Render (ตั้งแต่ ต.ค. 2569 — trial ของ Railway หมด)
+
+1. render.com → New → **Blueprint** → เลือก repo นี้ Render อ่าน `render.yaml` แล้วสร้าง web service ฟรีที่สิงคโปร์
+2. ใส่ค่าที่ Render ถาม (LINE token/secret, LIFF, `DATABASE_URL`, OpenAI) — ค่าเดียวกับที่เคยตั้งบน Railway
+   ไม่ต้องตั้ง `PUBLIC_BASE_URL` แอปอ่าน `RENDER_EXTERNAL_URL` เอง
+3. **กันเครื่องหลับ:** Render ฟรีหลับเมื่อไม่มีคนเรียก 15 นาที แต่สรุป 07:00/20:00 ต้องตื่นอยู่
+   ตั้ง UptimeRobot (ฟรี) ให้เรียก `https://<service>.onrender.com/health` ทุก 5 นาที — ได้แจ้งเตือนทางอีเมลตอนล่มด้วย
+4. ย้าย webhook: Messaging API → Webhook URL = `https://<service>.onrender.com/line/webhook`
+   และ LINE Login → LIFF → Endpoint URL = `https://<service>.onrender.com/liff/`
+5. ตั้ง repository variable `HEALTH_URL` ใน GitHub ให้ health check รายชั่วโมงชี้ที่อยู่ใหม่
+
+ลิงก์ซิงก์ปฏิทิน (.ics) และรูปสรุปเก่าผูกกับโดเมนเดิม — ขอลิงก์ปฏิทินใหม่ในแอปหลังย้าย
+
 ระหว่าง dev ใช้ `cloudflared tunnel --url http://localhost:3000` ได้ แต่ URL จะเปลี่ยนทุกครั้งที่
 tunnel เริ่มใหม่ และทุกอย่างหยุดเมื่อเครื่องหลับ — ต้องไปแก้ Webhook URL ใน LINE console ใหม่ทุกที
 

@@ -44,7 +44,9 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
 
   PORT: z.coerce.number().int().positive().default(3000),
-  PUBLIC_BASE_URL: z.string().default('http://localhost:3000'),
+  // Render names the service's own address in RENDER_EXTERNAL_URL, so a
+  // deploy there needs nothing set by hand; elsewhere, set it.
+  PUBLIC_BASE_URL: z.string().default(process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000'),
   TZ: z.string().default('Asia/Bangkok'),
 
   PUSH_MONTHLY_QUOTA: z.coerce.number().int().positive().default(500),

@@ -36,6 +36,13 @@ export function createApp(deps: AppDeps) {
    * bot that is up but silently not reminding anyone is the failure that
    * actually costs a family something.
    */
+  /**
+   * "The process is up" and nothing more — no database, never 503. The host
+   * asks this to decide whether a deploy is alive, and a keep-awake pinger
+   * can hit it every few minutes for free. /health below is the deeper check.
+   */
+  app.get('/healthz', (c) => c.text('ok'));
+
   app.get('/health', async (c) => {
     const drafts = deps.pendingDrafts?.() ?? 0;
 

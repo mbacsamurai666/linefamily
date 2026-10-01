@@ -1,0 +1,50 @@
+# Render Blueprint — the free host for the bot after Railway's trial ended.
+#
+# One web service built from the same Dockerfile. Render's free instances
+# sleep after 15 minutes with no inbound request, and the reminder engine
+# must be awake at 07:00 and 20:00 — so an outside pinger (UptimeRobot,
+# cron-job.org) calls /healthz every 5–10 minutes. See README › Hosting.
+#
+# PUBLIC_BASE_URL is not listed: the app reads RENDER_EXTERNAL_URL itself.
+services:
+  - type: web
+    name: familys-management
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # Secrets: Render asks for these when the Blueprint is created.
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LIFF_ID
+        sync: false
+      - key: LIFF_CHANNEL_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      # Settings: the same values Railway ran with.
+      - key: TZ
+        value: Asia/Bangkok
+      - key: AI_ENABLED
+        value: 'true'
+      - key: OPENAI_TEXT_MODEL
+        value: gpt-5-mini
+      - key: OPENAI_VISION_MODEL
+        value: gpt-4o-mini
+      - key: PUSH_MONTHLY_QUOTA
+        value: '500'
+      - key: PUSH_RESERVE_THRESHOLD
+        value: '60'
+      - key: DIGEST_MORNING_HOUR
+        value: '7'
+      - key: DIGEST_EVENING_HOUR
+        value: '20'
+      # Health questions never leave the server.
+      - key: AI_MODULES_DISABLED
+        value: meds

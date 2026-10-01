@@ -23,7 +23,8 @@ jobs:
     steps:
       - name: GET /health
         env:
-          HEALTH_URL: https://bot-production-60492.up.railway.app/health
+          # Set the repository variable HEALTH_URL when the bot moves host.
+          HEALTH_URL: ${{ vars.HEALTH_URL || 'https://bot-production-60492.up.railway.app/health' }}
         run: |
           # Three tries a minute apart, so a deploy restarting the container
           # does not read as an outage.
