@@ -88,7 +88,7 @@ describe('RuleIntentParser — appointments', () => {
 
   it('keeps a subject after "มีนัด" but drops the "มี"', async () => {
     const r = await rule.parse('อีก 5 วัน มีนัดหมอฟัน 15:00', ctx);
-    expect(r.kind === 'event' && r.draft.kind === 'event' && r.draft.title).toBe('นัดหมอฟัน');
+    expect(r.kind === 'event' && r.draft.kind === 'event' && r.draft.title).toBe('หมอฟัน');
   });
 
   it('leaves a remark about calling something off for ChatGPT to read', async () => {
@@ -112,19 +112,6 @@ describe('RuleIntentParser — appointments', () => {
     expect(r.kind).toBe('event');
     if (r.kind !== 'event') return;
     expect(r.confidence).toBeLessThan(0.7);
-  });
-
-  it('drops confidence the same way when a date word is misspelled and silently fails to match', async () => {
-    // "พรุ้งนี้" (wrong tone mark) is not "พรุ่งนี้" — the date word never
-    // matches, so this must degrade exactly like the no-date-at-all case
-    // rather than confidently landing on today's occurrence of 15:00.
-    const r = await rule.parse('พรุ้งนี้บ่าย 3 พาแม่ไปหาหมอ', ctx);
-    expect(r.kind).toBe('event');
-    if (r.kind !== 'event' || r.draft.kind !== 'event') return;
-    expect(r.confidence).toBeLessThan(0.7);
-    // And the silent failure mode itself: the typo reads as "today", not
-    // tomorrow, which is exactly why this case needs the LLM's help.
-    expect(r.draft.startAt.toFormat('yyyy-MM-dd')).toBe('2026-09-04');
   });
 
   it('stays confident for an explicit weekday name even with no other date word', async () => {
@@ -456,12 +443,6 @@ describe('ChainedIntentParser — LLM is a fallback, not a default', () => {
     expect(llmCalls).toBe(1);
   });
 
-  it('also escalates a misspelled date word instead of confidently saving the wrong day', async () => {
-    const chain = new ChainedIntentParser([rule, llm]);
-    await chain.parse('พรุ้งนี้บ่าย 3 พาแม่ไปหาหมอ', ctx);
-    expect(llmCalls).toBe(1);
-  });
-
   it('prefers the LLM answer when the rule parser is only tentative', async () => {
     const confidentLlm: IntentParser = {
       name: 'llm',
@@ -525,8 +506,9 @@ describe('a message of several lines', () => {
     const result = await rule.parse(message, ctx);
     expect(result.kind).toBe('event');
     if (result.kind !== 'event' || result.draft.kind !== 'event') return;
-    expect(result.draft.title).toBe('สอบ นักเรียนเตรียมอุปกรณ์');
-    expect(result.draft.note).toBe('ดินสอ\nยางลบ\nไม้บรรทัด\nสีไม้\nมาให้พร้อมนะคะ');
+    // "เตรียม…" is an instruction, so it moves into the note.
+    expect(result.draft.title).toBe('สอบ นักเรียน');
+    expect(result.draft.note).toBe('เตรียมอุปกรณ์\nดินสอ\nยางลบ\nไม้บรรทัด\nสีไม้\nมาให้พร้อมนะคะ');
     expect(result.draft.category).toBe('SCHOOL');
     expect(result.draft.startAt.toISODate()).toBe(ctx.now.plus({ days: 1 }).toISODate());
   });
@@ -612,5 +594,60 @@ describe('recurring costs that come round less often', () => {
       estimateAmount: 250_000,
       dueDay: 20,
     });
+  });
+});
+
+/** Messages the family really typed, read the way they meant them. */
+describe('reading real messages', () => {
+  const rule = new RuleIntentParser();
+  const at = DateTime.fromISO('2026-10-29T10:00', { zone: 'Asia/Bangkok' });
+  const family = { ...ctx, now: at, memberNames: ['Aon', 'ไอที', 'ไอเดีย'] };
+  const read = async (text: string) => {
+    const r = await rule.parse(text, family);
+    if (r.kind !== 'event' || r.draft.kind !== 'event') throw new Error(`not an appointment: ${text} (${r.kind})`);
+    return r.draft;
+  };
+
+  it('takes "9.00" as nine o\'clock in a message about an appointment', async () => {
+    const d = await read('นัด ตรวจสุขภาพ 9.00 30 ต.ค.');
+    expect(d.title).toBe('ตรวจสุขภาพ');
+    expect(d.allDay).toBe(false);
+    expect(d.startAt.toFormat('HH:mm')).toBe('09:00');
+  });
+
+  it('still reads "9.50" as money when nothing says appointment', async () => {
+    expect((await rule.parse('ค่าข้าว 9.50', family)).kind).toBe('expense');
+  });
+
+  it('puts "ที่ด่านเกวียน" in the place, not the name', async () => {
+    const d = await read('มีนัดส่งบ้าน ที่ด่านเกวียน 8.00 พรุ่งนี้');
+    expect(d.title).toBe('ส่งบ้าน');
+    expect(d.location).toBe('ด่านเกวียน');
+    expect(d.startAt.toFormat('dd/MM HH:mm')).toBe('30/10 08:00');
+  });
+
+  it('forgives "พรุ้งนี้", and drops the "มีนัด" opener', async () => {
+    const d = await read('พรุ้งนี้ มีนัดหาหมอ');
+    expect(d.title).toBe('หาหมอ');
+    expect(d.startAt.toISODate()).toBe('2026-10-30');
+  });
+
+  it('keeps an instruction as the note, even with no space before it', async () => {
+    expect(await read('ตรวจสุขภาพ งดอาหารถึงเย็น 28 ต.ค.')).toMatchObject({ title: 'ตรวจสุขภาพ', note: 'งดอาหารถึงเย็น' });
+    expect(await read('ตรวจสุขภาพงดอาหาร ถึงเย็น 28 ต.ค. 12.00')).toMatchObject({ title: 'ตรวจสุขภาพ', note: 'งดอาหาร ถึงเย็น' });
+  });
+
+  it('names the child, the time and the place all at once', async () => {
+    expect(await read('ไอที สอบ 5 พ.ย. 9.00 ที่โรงเรียน')).toMatchObject({
+      title: 'สอบ',
+      attendeeName: 'ไอที',
+      location: 'โรงเรียน',
+    });
+  });
+
+  it('refuses a message that names nothing', async () => {
+    for (const text of ['นัด', 'หมอนัด เวลา', 'มีนัด พรุ่งนี้']) {
+      expect((await rule.parse(text, family)).kind, text).toBe('unknown');
+    }
   });
 });

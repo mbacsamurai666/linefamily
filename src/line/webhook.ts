@@ -37,6 +37,8 @@ export interface WebhookDeps {
   photoTargets?: PhotoTargetStore;
   /** Appointments just saved, waiting for "ของใคร?" to be answered. */
   assignments?: AssignmentStore;
+  /** Where this bot answers from, for links it hands out in the chat. */
+  publicBaseUrl?: string;
   /** ChatGPT's translation of plain speech into commands. Omit to run with rules only. */
   rewriter?: CommandRewriter;
   /** The LIFF app's link, handed to people who join or ask. Omit when there is no app. */
@@ -274,6 +276,7 @@ async function handleMessage(
     familyId: family.id,
     memberId: member?.id ?? null,
     now: DateTime.now().setZone(family.timezone),
+    ...(deps.publicBaseUrl ? { publicBaseUrl: deps.publicBaseUrl } : {}),
   });
   if (direct) {
     await deps.api.replyMessage({
@@ -315,6 +318,7 @@ async function handleMessage(
       familyId: family.id,
       memberId: member?.id ?? null,
       now: ctx.now,
+      ...(deps.publicBaseUrl ? { publicBaseUrl: deps.publicBaseUrl } : {}),
     };
     const outcome = await tryRewrite(event.replyToken, text, deps, family, cmdCtx, ctx);
     if (outcome === 'handled') return;

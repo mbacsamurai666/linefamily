@@ -1030,13 +1030,16 @@ describe('a trip across several days, from the app', () => {
 
 describe('reminders for one appointment', () => {
   const DAY = 24 * 60;
+  // Ten days out, whenever this runs: reminders a day and two hours ahead
+  // both still lie in the future, so both get queued.
+  const soonIso = `${DateTime.now().setZone(ZONE).plus({ days: 10 }).toISODate()}T09:00`;
 
   it('override the family setting, and can be handed back to it', async () => {
     const created = await authed('/events', {
       method: 'POST',
       body: JSON.stringify({
         title: 'สอบว่ายน้ำ',
-        startAt: '2026-10-08T09:00',
+        startAt: soonIso,
         reminderMinutes: [DAY, 120],
       }),
     });
@@ -1062,7 +1065,7 @@ describe('reminders for one appointment', () => {
     for (const reminderMinutes of [[], [999999]]) {
       const res = await authed('/events', {
         method: 'POST',
-        body: JSON.stringify({ title: 'x', startAt: '2026-10-08T09:00', reminderMinutes }),
+        body: JSON.stringify({ title: 'x', startAt: soonIso, reminderMinutes }),
       });
       expect(res.status).toBe(400);
     }

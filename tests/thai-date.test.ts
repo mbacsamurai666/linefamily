@@ -71,9 +71,8 @@ describe('parseThaiDateTime', () => {
       expect(hit?.hasExplicitDate).toBe(false);
     });
 
-    it('is false when the date word is misspelled and never actually matches', () => {
-      const hit = parseThaiDateTime('พรุ้งนี้บ่าย 3', NOW);
-      expect(hit?.hasExplicitDate).toBe(false);
+    it('is true for a misspelled "พรุ้งนี้": a phone keyboard\'s tone mark is still tomorrow', () => {
+      expect(parseThaiDateTime('พรุ้งนี้ บ่าย 3', NOW)?.hasExplicitDate).toBe(true);
     });
   });
 });

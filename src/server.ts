@@ -115,6 +115,7 @@ async function main(): Promise<void> {
     drafts,
     photoTargets,
     assignments,
+    publicBaseUrl: cfg.PUBLIC_BASE_URL,
     defaultTimezone: cfg.TZ,
     channelSecret: cfg.LINE_CHANNEL_SECRET,
     pendingDrafts: () => drafts.size,

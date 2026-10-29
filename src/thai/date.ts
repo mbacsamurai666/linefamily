@@ -335,8 +335,10 @@ function matchDate(text: string, now: DateTime): DateMatch | null {
   const relatives: Array<[RegExp, () => DateTime]> = [
     // Before "วันนี้", or "วันทำการถัดไป" would match on its "วัน".
     [/วัน(?:ทำการ|เปิดทำการ)(?:ถัดไป|หน้า)/, () => nextBusinessDay(today)],
-    [/วันนี้/, () => today],
-    [/พรุ่งนี้/, () => today.plus({ days: 1 })],
+    // "พรุ้งนี้" and "วันี้" are how these come out of a phone keyboard
+    // often enough that refusing them would just be pedantry.
+    [/วั[นั]นี้|วันี้/, () => today],
+    [/พ[รฤ]ุ?[่้]?ง\s?นี้|พรุ่ง/, () => today.plus({ days: 1 })],
     [/มะรืน(?:นี้)?/, () => today.plus({ days: 2 })],
     [/เมื่อวาน(?:นี้)?/, () => today.minus({ days: 1 })],
     [/ต้นเดือนหน้า/, () => today.plus({ months: 1 }).startOf('month')],
@@ -363,10 +365,23 @@ function matchDate(text: string, now: DateTime): DateMatch | null {
  * Returns null when neither is present — callers treat that as "this message
  * is not about a scheduled thing" rather than guessing a date.
  */
+/**
+ * Words that say a message is about a time, not about money. In their
+ * company "9.00" is nine in the morning; on its own it could be nine baht.
+ */
+const APPOINTMENT_WORDS = /นัด|หมอ|ประชุม|สอบ|เรียน|ตรวจ|สัมภาษณ์|เลิก|เริ่ม|ถึง|ออกเดินทาง|บิน|ไฟลต์|ไปรับ|ไปส่ง|เวลา/;
+
+/** "9.00" / "8.30" where a dot stands in for the colon on a phone keyboard. */
+const DOTTED_TIME = /(?<![\d.])([01]?\d|2[0-3])\.([0-5]\d)(?![\d.])/;
+
 export function parseThaiDateTime(input: string, now: DateTime): ThaiDateTimeMatch | null {
   const text = normalizeThaiDigits(input);
 
-  const timeHit = matchTime(text);
+  let timeHit = matchTime(text);
+  if (!timeHit && APPOINTMENT_WORDS.test(text)) {
+    const dotted = text.match(DOTTED_TIME);
+    if (dotted) timeHit = { hour: Number(dotted[1]), minute: Number(dotted[2]), text: dotted[0] };
+  }
   // Never let the time regex and the date regex consume the same characters.
   const dateSource = timeHit ? text.replace(timeHit.text, ' ') : text;
   const dateHit = matchDate(dateSource, now);

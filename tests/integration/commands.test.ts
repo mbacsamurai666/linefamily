@@ -725,3 +725,28 @@ describe('the family’s expense plan', () => {
     expect(reply).toContain('ยังไม่ได้ใส่ยอด: ค่าน้ำ');
   });
 });
+
+describe('the phone calendar link', () => {
+  it('is handed out in the chat, kept the same, and replaced on request', async () => {
+    const base = { ...ctx(), publicBaseUrl: 'https://bot.example.com' };
+
+    const first = await tryDirectCommand('แจ้งเตือนมือถือ', base);
+    expect(first?.reply).toContain('webcal://bot.example.com/calendar/');
+    expect(first?.reply).toContain('https://bot.example.com/calendar/');
+    const token = first?.reply.match(/calendar\/([\w-]+)\.ics/)?.[1];
+    expect(token).toBeTruthy();
+
+    // Asked again, the same link — the family's calendar app keeps working.
+    const again = await tryDirectCommand('ลิงก์ปฏิทิน', base);
+    expect(again?.reply).toContain(`/calendar/${token}.ics`);
+
+    const reset = await tryDirectCommand('ลิงก์ปฏิทินใหม่', base);
+    expect(reset?.reply).not.toContain(`/calendar/${token}.ics`);
+    expect(reset?.reply).toContain('ลิงก์เดิมใช้ไม่ได้');
+  });
+
+  it('says so when the server has no public address to hand out', async () => {
+    const reply = await tryDirectCommand('แจ้งเตือนมือถือ', ctx());
+    expect(reply?.reply).toContain('ยังไม่เปิดใช้');
+  });
+});

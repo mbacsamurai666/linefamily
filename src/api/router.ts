@@ -2,10 +2,10 @@ import type { PrismaClient } from '@prisma/client';
 import { Hono } from 'hono';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
-import { randomBytes } from 'node:crypto';
 import { EXPORT_LINK_TTL_MINUTES, type ExportLinkStore } from './exportLinks.js';
 import { listCalendar, MAX_RANGE_DAYS } from '../modules/calendar.js';
 import { computeMoneyOverview, computeTaskCounts, computeUpcoming } from '../modules/dashboard.js';
+import { calendarLink } from '../modules/calendarLink.js';
 import { computeExpensePlan } from '../modules/expensePlan.js';
 import { dateOnly, toDateColumn } from '../modules/billOccurrences.js';
 import {
@@ -678,28 +678,9 @@ export function createApiRouter(deps: ApiDeps) {
     const member = c.get('member');
     if (!deps.publicBaseUrl) return c.json({ error: 'ยังไม่เปิดใช้บนเซิร์ฟเวอร์นี้' }, 503);
 
-    const reset = c.req.query('reset') === '1';
-    const family = await deps.prisma.family.findUniqueOrThrow({
-      where: { id: member.familyId },
-      select: { calendarToken: true },
-    });
-    const token =
-      family.calendarToken && !reset
-        ? family.calendarToken
-        : (
-            await deps.prisma.family.update({
-              where: { id: member.familyId },
-              data: { calendarToken: randomBytes(24).toString('base64url') },
-              select: { calendarToken: true },
-            })
-          ).calendarToken;
-
-    const base = deps.publicBaseUrl.replace(/\/+$/, '');
-    return c.json({
-      url: `${base}/calendar/${token}.ics`,
-      /** What a phone's calendar app expects, so tapping it offers to subscribe. */
-      webcalUrl: `${base.replace(/^https?:/, 'webcal:')}/calendar/${token}.ics`,
-    });
+    return c.json(
+      await calendarLink(deps.prisma, member.familyId, deps.publicBaseUrl, c.req.query('reset') === '1'),
+    );
   });
 
   /**

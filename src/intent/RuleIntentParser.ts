@@ -481,6 +481,29 @@ function extractAttendee(
 const CALLS_OFF = /^(?:งด|ยกเลิก|เลื่อน|ข้าม|ไม่ไป|ไม่ต้องไป|ไม่มี)/;
 
 /**
+ * "ที่ด่านเกวียน", "ที่โรงพยาบาลศิริราช", "@ เซ็นทรัล" — where it happens,
+ * which belongs in the card's สถานที่ line, not in its name. Only taken when
+ * it is the last thing said, so "ที่" inside a name ("ไปที่ดิน") is left alone.
+ */
+const PLACE_AT_END = /\s(?:ที่|@)\s?([^\s,][^,]{1,40}?)\s*$/;
+
+/**
+ * What follows one of these is an instruction, not the appointment's name:
+ * "ตรวจสุขภาพ งดอาหารถึงเย็น", "สอบ เตรียมดินสอ". It goes to the note.
+ */
+const NOTE_LEAD = /(?:\s|(?<=[ก-๛]))((?:งดอาหาร|งดน้ำ|งด\s|ห้าม|อย่าลืม|เตรียม|เอา\s|ต้อง|นำ\s|พก|แต่งกาย|ใส่ชุด|โปรด|กรุณา)[^,]*)$/;
+
+/**
+ * Filler that opens a Thai sentence about an appointment: "มีนัดหาหมอ" is
+ * "หาหมอ", "มีนัด ตรวจสุขภาพ" is "ตรวจสุขภาพ". "นัด" stays where it is the
+ * noun itself ("นัดหมอ", "หมอนัด").
+ */
+const OPENERS = /^(?:มี\s?นัด\s?(?:หมาย)?\s*|มี\s?|นัด\s+)/;
+
+/** A name that is only the word for "appointment", or nothing at all, is not a name. */
+const EMPTY_TITLES = /^(?:นัด|นัดหมาย|หมอนัด|นัดหมอ|มีนัด|เวลา|มีงาน)$/;
+
+/**
  * A message of several lines — "พรุ่งนี้ สอบ" and then the list of things to
  * bring — names the appointment on its first line; the rest is its note. A
  * line that is only a kind ("โรงเรียน") says which kind it is.
@@ -520,10 +543,29 @@ function matchEvent(fullText: string, ctx: FamilyContext): ParseResult {
   ]);
   // A bare date with no subject is not an appointment worth creating.
   if (stripped.length < 2) return { kind: 'unknown' };
-  // "อีก 5 วันมีนัด 15.00" leaves "มีนัด" — the "have" is not part of the
-  // name, and a card titled "นัด" alone reads better as "นัดหมาย".
-  const unhad = stripped.replace(/^มี(?=นัด)/, '');
-  const title = unhad === 'นัด' ? 'นัดหมาย' : unhad;
+  // "ที่ด่านเกวียน" at the end is where, and "งดอาหารถึงเย็น" is what to
+  // remember — neither is what the appointment is called.
+  let body = stripped;
+  let location: string | undefined;
+  const place = body.match(PLACE_AT_END);
+  if (place && body.slice(0, place.index).trim().length >= 2) {
+    location = (place[1] as string).trim();
+    body = body.slice(0, place.index).trim();
+  }
+  const extraNote: string[] = [];
+  const lead = body.match(NOTE_LEAD);
+  if (lead && body.slice(0, lead.index).trim().length >= 2) {
+    extraNote.push((lead[1] as string).trim());
+    body = body.slice(0, lead.index).trim();
+  }
+  // "มีนัดหาหมอ" is about หาหมอ; "หมอนัด เวลา" names nothing at all.
+  const spoken = body.replace(OPENERS, '').replace(/\s+/g, ' ').trim();
+  // "อีก 5 วันมีนัด 15.00" says when but not what; with a time it is still an
+  // appointment worth keeping, titled as one. A bare "นัด" with no time is not.
+  const bare = spoken.length < 2 || EMPTY_TITLES.test(spoken);
+  if (bare && when.allDay) return { kind: 'unknown' };
+  const title = bare ? 'นัดหมาย' : spoken;
+  const fullNote = [...extraNote, note].filter(Boolean).join('\n');
 
   const guessed = guessEventCategory(title);
   const category: EventCategory = named ?? (guessed !== 'OTHER' ? guessed : guessEventCategory(note));
@@ -567,7 +609,7 @@ function matchEvent(fullText: string, ctx: FamilyContext): ParseResult {
         title,
         dueAt: when.start,
         ...(attendee ? { assigneeName: attendee.name } : {}),
-        ...(note ? { note } : {}),
+        ...(fullNote ? { note: fullNote } : {}),
       },
     };
   }
@@ -585,7 +627,8 @@ function matchEvent(fullText: string, ctx: FamilyContext): ParseResult {
       category,
       ...(attendee ? { attendeeName: attendee.name } : {}),
       ...(repeat ? { rrule: repeat.rrule } : {}),
-      ...(note ? { note } : {}),
+      ...(location ? { location } : {}),
+      ...(fullNote ? { note: fullNote } : {}),
     },
   };
 }

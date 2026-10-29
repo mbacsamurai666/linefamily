@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { computeNetBalances, settleUp } from './debts.js';
+import { calendarLink } from './calendarLink.js';
 import { computeExpensePlan } from './expensePlan.js';
 import { computeFunds, fundTotals, moneyItems } from './money.js';
 import { computeExpenseSummary } from './expenseSummary.js';
@@ -58,6 +59,8 @@ export interface CommandContext {
   familyId: string;
   memberId: string | null;
   now: DateTime;
+  /** Where this bot answers from — needed to hand out the calendar feed link. */
+  publicBaseUrl?: string;
 }
 
 export interface CommandResult {
@@ -88,6 +91,9 @@ const DELETE_BY_NAME = /^ลบ(นัด|บิล|เอกสาร|ยา|�
 const CLOSE_TASK = /^(?:ปิดงาน|งานเสร็จ)\s+(.+)$/;
 const SET_BIRTHDAY = /^วันเกิด\s*(?:ของ)?\s*(.+?)\s+((?:\d{1,2}|[ก-๛]).+)$/;
 const SYSTEM_STATUS = /^(?:สถานะระบบ|ระบบเป็นไงบ้าง|เช็คระบบ)$/;
+/** "แจ้งเตือนมือถือ" / "ลิงก์ปฏิทิน" — the feed a phone's own calendar subscribes to. */
+const PHONE_CALENDAR = /^(?:แจ้งเตือน(?:ใน)?มือถือ|ลิงก์?(?:ปฏิทิน|แจ้งเตือน)|ปฏิทินมือถือ|ซิงก์ปฏิทิน|ขอลิงก์?ปฏิทิน)$/;
+const PHONE_CALENDAR_RESET = /^(?:ลิงก์?ปฏิทินใหม่|ออกลิงก์?ปฏิทินใหม่|รีเซ็ตลิงก์?ปฏิทิน)$/;
 const COMPARE_MONTHS = /^(?:เทียบ(?:กับ)?เดือน(?:ที่แล้ว|ก่อน)?|เดือนนี้ใช้เยอะกว่าเดือนที่แล้วไหม)$/;
 const SPEND_SUMMARY = /^(?:สรุป(?:รายจ่าย)?|ใช้ไปเท่าไหร่|ใช้เงินไปเท่าไหร่)\s*(.*)$/;
 const PAY_BILL = /^(?:จ่ายบิลแล้ว|จ่ายบิล|บิลจ่ายแล้ว)\s+(.+)$/;
@@ -120,6 +126,8 @@ export function classifyCommand(text: string): 'read' | 'act' | null {
     NET_WORTH_SUMMARY,
     TASK_BOARD,
     SYSTEM_STATUS,
+    PHONE_CALENDAR,
+    PHONE_CALENDAR_RESET,
     COMPARE_MONTHS,
     SPEND_SUMMARY,
     AGENDA_RANGE,
@@ -213,6 +221,8 @@ export async function tryDirectCommand(
   if (payBill) return handlePayBill(ctx, (payBill[1] as string).trim());
 
   if (SYSTEM_STATUS.test(text)) return handleSystemStatus(ctx);
+  if (PHONE_CALENDAR.test(text)) return handlePhoneCalendar(ctx);
+  if (PHONE_CALENDAR_RESET.test(text)) return handlePhoneCalendarReset(ctx);
   if (COMPARE_MONTHS.test(text)) return handleCompareMonths(ctx);
 
   const spend = text.match(SPEND_SUMMARY);
@@ -693,6 +703,40 @@ async function handleDepositSummary(ctx: CommandContext): Promise<CommandResult>
   const total = deposits.reduce((sum, d) => sum + d.balanceSatang, 0);
 
   return { reply: `สรุปเงินฝาก\n\n${lines.join('\n')}\n\nรวม ${formatSatang(total)} บาท` };
+}
+
+/**
+ * "แจ้งเตือนมือถือ" — the link that puts the family's calendar into the
+ * phone's own calendar app, which is what rings on the lock screen. The link
+ * is the whole credential, so the reply says so.
+ */
+async function handlePhoneCalendar(ctx: CommandContext): Promise<CommandResult> {
+  if (!ctx.publicBaseUrl) {
+    return { reply: 'ลิงก์ปฏิทินยังไม่เปิดใช้บนเซิร์ฟเวอร์นี้ครับ' };
+  }
+  const link = await calendarLink(ctx.prisma, ctx.familyId, ctx.publicBaseUrl);
+  return {
+    reply: [
+      '📱 แจ้งเตือนในมือถือ — เอาปฏิทินบ้านเราไปไว้ในปฏิทินของเครื่อง จะได้เด้งเตือนเหมือนนัดทั่วไป',
+      '',
+      '📲 iPhone: แตะลิงก์นี้ แล้วกด "สมัครรับ"',
+      link.webcalUrl,
+      '',
+      '🤖 Android / Google Calendar: เปิด calendar.google.com บนคอม → ปฏิทินอื่นๆ (+) → จาก URL → วางลิงก์นี้',
+      link.url,
+      '',
+      'นัดใหม่จะไปโผล่เองใน 1 ชม. · ใครมีลิงก์นี้อ่านปฏิทินบ้านได้ ถ้าหลุดพิมพ์ "ลิงก์ปฏิทินใหม่"',
+    ].join('\n'),
+  };
+}
+
+/** "ลิงก์ปฏิทินใหม่" — a new link; every copy of the old one stops working. */
+async function handlePhoneCalendarReset(ctx: CommandContext): Promise<CommandResult> {
+  if (!ctx.publicBaseUrl) return { reply: 'ลิงก์ปฏิทินยังไม่เปิดใช้บนเซิร์ฟเวอร์นี้ครับ' };
+  const link = await calendarLink(ctx.prisma, ctx.familyId, ctx.publicBaseUrl, true);
+  return {
+    reply: `🔄 ออกลิงก์ใหม่แล้ว ลิงก์เดิมใช้ไม่ได้อีกต่อไป — สมัครรับใหม่ด้วยลิงก์นี้ครับ\n${link.webcalUrl}`,
+  };
 }
 
 /** "สถานะระบบ" — the same numbers /health serves, in a sentence. */
